@@ -1,6 +1,6 @@
 # TiagoProDentist - Tool Perception System
 
-Projekt wykrywania i pozycjonowania narzędzi stomatologicznych w przestrzeni 3D przy użyciu modelu **YOLOv11** oraz systemu **ROS 2 Jazzy**. System przetwarza dane z kamery RGB-D, publikując obraz z detekcjami oraz chmurę punktów wykrytych obiektów.
+Projekt wykrywania i pozycjonowania narzędzi stomatologicznych w przestrzeni 3D przy użyciu modelu **YOLOv8** oraz systemu **ROS 2 Jazzy**. System przetwarza dane z kamery RGB-D, publikując obraz z detekcjami oraz chmurę punktów wykrytych obiektów.
 
 ## 🛠️ Wymagania systemowe
 * **System:** Ubuntu 24.04 (Noble Numbat).
