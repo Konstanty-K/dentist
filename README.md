@@ -41,6 +41,6 @@ Aby zobaczyć wyniki, otwórz nowy terminal na Ubuntu i:
 
 ## ⚠️ Rozwiązywanie problemów
 1. **Brak obrazu w RViz:** Upewnij się, że na hoście i w Dockerze ustawiono zmienną środowiskową dla FastDDS: 
-	* `export FASTRTPS_DEFAULT_PROFILES_FILE=/Shared/fastdds_no_shm.xml\`.
+	* `export FASTRTPS_DEFAULT_PROFILES_FILE=/Shared/fastdds_no_shm.xml`.
 2. **Błąd rclpy:** Pamiętaj o wykonaniu wewnątrz kontenera przed uruchomieniem skryptu
-	* `source /opt/ros/jazzy/setup.bash\`
+	* `source /opt/ros/jazzy/setup.bash`
