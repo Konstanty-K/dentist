@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ROS 2 & Logs
+install/
+build/
+log/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# Bag
+bag/

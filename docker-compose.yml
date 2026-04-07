@@ -1,0 +1,20 @@
+services:
+  perception:
+    build: .
+    container_name: TiagoProDentist
+    network_mode: "host"
+    privileged: true
+    ipc: host
+    pid: host
+    environment:
+      - DISPLAY=${DISPLAY}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - XAUTHORITY=/tmp/.docker.xauth
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - .:/Shared
+      - /dev:/dev
+    stdin_open: true
+    tty: true
+    command: /bin/bash
