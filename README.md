@@ -18,31 +18,29 @@ Projekt wykrywania i pozycjonowania narzędzi stomatologicznych w przestrzeni 3D
 
 ### 1. Budowanie i uruchomienie kontenera
 Będąc w głównym folderze projektu, wykonaj:
-\`\`\`bash
-docker compose build
-docker compose up -d
-\`\`\`
+`docker compose build`
+`docker compose up -d`
+
 
 ### 2. Uruchomienie węzła percepcji
-Wejdź do kontenera i odpal skrypt:
-\`\`\`bash
-docker exec -it TiagoProDentist bash
-source /opt/ros/jazzy/setup.bash
-python3 scripts/yolo_to_rviz.py
-\`\`\`
+1. Wejdź do kontenera i odpal skrypt:
+	* `docker exec -it TiagoProDentist bash`
+	* `source /opt/ros/jazzy/setup.bash`
+	* `python3 scripts/yolo_to_rviz.py`
 
 ### 3. Wizualizacja w RViz2 (Na Hoście)
 Aby zobaczyć wyniki, otwórz nowy terminal na Ubuntu i:
 1. Uruchom publikator statycznego układu współrzędnych:
-   \`ros2 run tf2_ros static_transform_publisher 0 0 0 0 0 0 map camera_color_optical_frame\`
+   * `ros2 run tf2_ros static_transform_publisher 0 0 0 0 0 0 map camera_color_optical_frame`
 2. Uruchom RViz2:
-   \`rviz2\`
+   * `rviz2`
 3. W RViz skonfiguruj:
    * **Fixed Frame:** \`map\`
    * **Image Topic:** \`/detected_tool_image\` (Reliability: Reliable)
    * **PointCloud2 Topic:** \`/detected_tool_pc\` (Reliability: Reliable)
 
 ## ⚠️ Rozwiązywanie problemów
-* **Brak obrazu w RViz:** Upewnij się, że na hoście i w Dockerze ustawiono zmienną środowiskową dla FastDDS: \`export FASTRTPS_DEFAULT_PROFILES_FILE=/Shared/fastdds_no_shm.xml\`.
-* **Błąd rclpy:** Pamiętaj o wykonaniu \`source /opt/ros/jazzy/setup.bash\` wewnątrz kontenera przed uruchomieniem skryptu.
-EOF
+1. **Brak obrazu w RViz:** Upewnij się, że na hoście i w Dockerze ustawiono zmienną środowiskową dla FastDDS: 
+	* `export FASTRTPS_DEFAULT_PROFILES_FILE=/Shared/fastdds_no_shm.xml\`.
+2. **Błąd rclpy:** Pamiętaj o wykonaniu wewnątrz kontenera przed uruchomieniem skryptu
+	* `source /opt/ros/jazzy/setup.bash\`
