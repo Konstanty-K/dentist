@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
 Pick & Place dla TIAGo Pro – ROS 2 / MoveIt 2
-Wersja kompletna, zsynchronizowana z fizycznym modelem Gazebo (table.sdf)
+Wersja z obsługą statycznego lewego ramienia oraz zsynchronizowanym stołem
 
 Cykl pracy robota:
-  0. OMPL: Wyjście do bezpiecznej pozycji startowej (HOME)
+  0. Inicjalizacja: Ustawienie LEWEGO ramienia w stałej pozycji oraz wstawienie stołu
+  0.1 OMPL: Wyjście prawego ramienia do bezpiecznej pozycji startowej (HOME)
   1. OMPL: Dojazd nad stół (APPROACH)
   2. Otwarcie chwytaka (GRIPPER_OPEN)
   3. Cartesian: Zjazd pionowy pod chwyt (GRASP)
@@ -12,7 +13,7 @@ Cykl pracy robota:
   5. Cartesian: Pionowe podniesienie obiektu ze stołu
   6. OMPL: Przejście do pozycji podania operatorowi (HANDOVER)
   7. Otwarcie chwytaka (Przekazanie narzędzia)
-  8. OMPL: Powrót do bezpiecznej pozycji startowej (HOME)
+  8. OMPL: Powrót prawego ramienia do bezpiecznej pozycji startowej (HOME)
 """
 
 import rclpy
@@ -34,33 +35,44 @@ from moveit_msgs.msg import (PlanningScene, CollisionObject, Constraints,
                               BoundingVolume)
 from shape_msgs.msg import SolidPrimitive
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # KONFIGURACJA POZYCJI (Cykl Pracy)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# 1. Neutralna pozycja startowa robota (Odczytana z RViz, wartości w radianach)
+# 1. Pozycja startowa PRAWEGO ramienia (Wartości w radianach)
 HOME_JOINTS = [
     0.15,                # torso_lift_joint (podniesiony dla bezpieczeństwa)
-    math.radians(-21),   # arm_right_1_joint
-    math.radians(-105),  # arm_right_2_joint
-    math.radians(-27),   # arm_right_3_joint
-    math.radians(-135),  # arm_right_4_joint
-    math.radians(0),     # arm_right_5_joint
+    math.radians(-176),  # arm_right_1_joint
+    math.radians(-53),   # arm_right_2_joint
+    math.radians(95),    # arm_right_3_joint
+    math.radians(31),    # arm_right_4_joint
+    math.radians(-7),    # arm_right_5_joint
     math.radians(-69),   # arm_right_6_joint
-    math.radians(0)      # arm_right_7_joint
+    math.radians(12)     # arm_right_7_joint
 ]
-# 2. Punkt chwytania na stole
+
+# STAŁA pozycja dla LEWEGO ramienia (Wartości w radianach)
+LEFT_HOME_JOINTS = [
+    math.radians(145),   # arm_left_1_joint
+    math.radians(-87),   # arm_left_2_joint
+    math.radians(-35),   # arm_left_3_joint
+    math.radians(-68),   # arm_left_4_joint
+    math.radians(-38),   # arm_left_5_joint
+    math.radians(-26),   # arm_left_6_joint
+    math.radians(10)     # arm_left_7_joint
+]
+
+# 2. Punkt chwytania na stole (Wycentrowany)
 GRASP_X = 0.80
 GRASP_Y = 0.00
 GRASP_Z = 1.0   
 
 # Punkt dojazdowy – 10 cm nad punktem chwytania
-APPROACH_Z = GRASP_Z + 0.10   # = 0.98
+APPROACH_Z = GRASP_Z + 0.10   
 
-# 3. Pozycja PODANIA narzędzia (Odczytana z RViz, wartości w radianach)
+# 3. Pozycja PODANIA narzędzia przez prawe ramię (Wartości w radianach)
 HANDOVER_JOINTS = [
-    0.15,                # torso_lift_joint (taki sam jak w pozycji HOME)
+    0.15,                # torso_lift_joint
     math.radians(-74),   # arm_right_1_joint
     math.radians(-78),   # arm_right_2_joint
     math.radians(117),   # arm_right_3_joint
@@ -81,7 +93,7 @@ BOX_ID     = 'sim_table'
 BOX_SIZE   = (0.80, 1.43, 0.03)
 BOX_CENTER = (0.9, 0.00, 0.735)
 
-# Parametry kontrolerów i MoveIta
+# Nazwy stawów i grupy dla prawego ramienia
 ARM_GROUP      = 'arm_right_torso'  
 BASE_FRAME     = 'base_footprint'
 ARM_JOINTS     = ['torso_lift_joint',
@@ -89,10 +101,15 @@ ARM_JOINTS     = ['torso_lift_joint',
                   'arm_right_4_joint', 'arm_right_5_joint', 'arm_right_6_joint',
                   'arm_right_7_joint']
 
-# Kalibracja sprzętowa dla TIAGo Pro Dentist
+# Definicja stawów dla lewego ramienia
+LEFT_ARM_JOINTS = ['arm_left_1_joint', 'arm_left_2_joint', 'arm_left_3_joint',
+                   'arm_left_4_joint', 'arm_left_5_joint', 'arm_left_6_joint',
+                   'arm_left_7_joint']
+
+# Kalibracja sprzętowa chwytaka (Radiany)
 GRIPPER_JOINTS = ['gripper_right_finger_joint']
-GRIPPER_OPEN   = [0.05]  # chwytak otwarty
-GRIPPER_CLOSED = [0.80]  # Chwytak zacisniety
+GRIPPER_OPEN   = [0.05]  # Maksymalne rozwarcie (~46 stopni)
+GRIPPER_CLOSED = [0.80]  # Pewny zacisk
 
 PLANNING_TIME  = 10.0
 CART_STEP      = 0.005   
@@ -109,6 +126,7 @@ class PickAndPlace(Node):
 
         self.move_client    = ActionClient(self, MoveGroup, '/move_action')
         self.arm_client     = ActionClient(self, FollowJointTrajectory, '/arm_right_controller/follow_joint_trajectory')
+        self.arm_left_client= ActionClient(self, FollowJointTrajectory, '/arm_left_controller/follow_joint_trajectory')
         self.torso_client   = ActionClient(self, FollowJointTrajectory, '/torso_controller/follow_joint_trajectory')
         self.gripper_client = ActionClient(self, FollowJointTrajectory, '/gripper_right_controller/follow_joint_trajectory')
 
@@ -146,18 +164,37 @@ class PickAndPlace(Node):
         return p
 
     def _active_sleep(self, duration_sec):
-        """Usypia główny wątek, przepychając jednocześnie komunikaty ROS 2."""
         end_time = time.time() + duration_sec
         while time.time() < end_time:
             rclpy.spin_once(self, timeout_sec=0.1)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # IK
+    # KONTROLA LEWEGO RAMIENIA (BEZPOŚREDNIA / STATYCZNA)
     # ─────────────────────────────────────────────────────────────────────────
+    def _set_left_arm_home(self):
+        traj = JointTrajectory()
+        traj.joint_names = LEFT_ARM_JOINTS
+        pt = JointTrajectoryPoint()
+        pt.positions       = LEFT_HOME_JOINTS
+        pt.time_from_start = Duration(seconds=3).to_msg()
+        traj.points.append(pt)
 
+        goal_msg = FollowJointTrajectory.Goal()
+        goal_msg.trajectory = traj
+
+        self.get_logger().info("Wysyłam rozkaz ustawienia lewego ramienia...")
+        future = self.arm_left_client.send_goal_async(goal_msg)
+        rclpy.spin_until_future_complete(self, future)
+        gh = future.result()
+        if gh.accepted:
+            rclpy.spin_until_future_complete(self, gh.get_result_async())
+        self._active_sleep(1.0)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # IK & OMPL & CARTESIAN
+    # ─────────────────────────────────────────────────────────────────────────
     def _get_ik(self, pose: Pose):
         self._wait_for_joints()
-
         req = GetPositionIK.Request()
         req.ik_request.group_name               = ARM_GROUP
         req.ik_request.pose_stamped             = PoseStamped()
@@ -171,25 +208,25 @@ class PickAndPlace(Node):
         res = future.result()
 
         if res.error_code.val != 1:
-            self.get_logger().error(f"IK błąd {res.error_code.val} dla ({pose.position.x:.2f}, {pose.position.y:.2f}, {pose.position.z:.2f})")
+            self.get_logger().error(f"IK błąd {res.error_code.val}")
             return None
-
         names = res.solution.joint_state.name
         positions = res.solution.joint_state.position
         return [p for n, p in zip(names, positions) if 'arm_right' in n or 'torso' in n]
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # OMPL
-    # ─────────────────────────────────────────────────────────────────────────
-
-    def _ompl(self, joints: list) -> bool:
+    def _ompl(self, joints: list, arm) -> bool:
         goal = MoveGroup.Goal()
-        goal.request.group_name            = ARM_GROUP
+        goal.request.group_name            = arm
         goal.request.allowed_planning_time = PLANNING_TIME
         goal.request.num_planning_attempts = 5
 
         constraints = Constraints()
-        for name, pos in zip(ARM_JOINTS, joints):
+        if arm == "arm_left":
+            arm_joints = LEFT_ARM_JOINTS
+        else:
+            arm_joints = ARM_JOINTS
+
+        for name, pos in zip(arm_joints, joints):
             jc = JointConstraint()
             jc.joint_name      = name
             jc.position        = pos
@@ -202,15 +239,19 @@ class PickAndPlace(Node):
         future = self.move_client.send_goal_async(goal)
         rclpy.spin_until_future_complete(self, future)
         gh = future.result()
+        # MIEJSCE 1: Błąd odrzucenia celu przez serwer akcji
         if not gh.accepted:
-            self.get_logger().error("OMPL: cel odrzucony")
+            self.get_logger().error(f"OMPL [{arm}]: Serwer akcji MoveIt całkowicie odrzucił żądanie ruchu!")
             return False
-
+        
         rf = gh.get_result_async()
         rclpy.spin_until_future_complete(self, rf)
-        code = rf.result().result.error_code.val
-        if code != 1:
-            self.get_logger().error(f"OMPL: błąd kod {code}")
+        
+        error_code = rf.result().result.error_code.val
+        
+        # MIEJSCE 2: Błąd planowania lub wykonania (1 to sukces w MoveIt)
+        if error_code != 1:
+            self.get_logger().error(f"OMPL [{arm}]: Planowanie/Wykonanie zakończone błędem. Kod błędu MoveIt: {error_code}")
             return False
         return True
 
@@ -222,13 +263,9 @@ class PickAndPlace(Node):
         goal.request.num_planning_attempts = 5
 
         constraints = Constraints()
-
         pc = PositionConstraint()
         pc.header.frame_id = BASE_FRAME
         pc.link_name       = 'arm_right_tool_link'
-        pc.target_point_offset.x = 0.0
-        pc.target_point_offset.y = 0.0
-        pc.target_point_offset.z = 0.0
 
         sphere = SP()
         sphere.type       = SP.SPHERE
@@ -252,31 +289,20 @@ class PickAndPlace(Node):
         oc.absolute_z_axis_tolerance = 0.1
         oc.weight = 1.0
         constraints.orientation_constraints.append(oc)
-
         goal.request.goal_constraints.append(constraints)
 
         future = self.move_client.send_goal_async(goal)
         rclpy.spin_until_future_complete(self, future)
         gh = future.result()
         if not gh.accepted:
-            self.get_logger().error("OMPL pose: cel odrzucony")
             return False
 
         rf = gh.get_result_async()
         rclpy.spin_until_future_complete(self, rf)
-        code = rf.result().result.error_code.val
-        if code != 1:
-            self.get_logger().error(f"OMPL pose: błąd kod {code}")
-            return False
-        return True
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # CARTESIAN PATH
-    # ─────────────────────────────────────────────────────────────────────────
+        return rf.result().result.error_code.val == 1
 
     def _cartesian(self, end_pose: Pose) -> bool:
         self._wait_for_joints()
-
         req = GetCartesianPath.Request()
         req.header.frame_id  = BASE_FRAME
         req.group_name       = ARM_GROUP
@@ -293,16 +319,12 @@ class PickAndPlace(Node):
 
         frac = res.fraction
         self.get_logger().info(f"Cartesian: {frac*100:.1f}% zaplanowane")
-
         if frac < MIN_FRACTION:
-            self.get_logger().error(f"Cartesian: za mała frakcja ({frac*100:.1f}%)")
             return False
 
         return self._execute_trajectory(res.solution.joint_trajectory)
 
     def _execute_trajectory(self, traj) -> bool:
-        from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-
         torso_joints = ['torso_lift_joint']
         arm_joints   = [j for j in traj.joint_names if j not in torso_joints]
         has_torso    = any(j in torso_joints for j in traj.joint_names)
@@ -343,26 +365,17 @@ class PickAndPlace(Node):
             torso_future = self.torso_client.send_goal_async(torso_goal)
 
         arm_future = self.arm_client.send_goal_async(arm_goal)
-
         rclpy.spin_until_future_complete(self, arm_future)
         arm_gh = arm_future.result()
         if not arm_gh.accepted:
-            self.get_logger().error("Kontroler ramienia odrzucił trajektorię")
             return False
 
         if torso_future is not None:
             rclpy.spin_until_future_complete(self, torso_future)
-            torso_gh = torso_future.result()
-            if not torso_gh.accepted:
-                self.get_logger().warn("Kontroler torsu odrzucił trajektorię (kontynuuję)")
 
         rf = arm_gh.get_result_async()
         rclpy.spin_until_future_complete(self, rf)
         return True
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # CHWYTAK
-    # ─────────────────────────────────────────────────────────────────────────
 
     def _gripper(self, position: list):
         traj = JointTrajectory()
@@ -380,12 +393,7 @@ class PickAndPlace(Node):
         gh = future.result()
         if gh.accepted:
             rclpy.spin_until_future_complete(self, gh.get_result_async())
-        
         self._active_sleep(1.0)
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # PLANNING SCENE
-    # ─────────────────────────────────────────────────────────────────────────
 
     def _scene_add_box(self):
         obj = CollisionObject()
@@ -411,12 +419,11 @@ class PickAndPlace(Node):
         for _ in range(5):
             self.scene_pub.publish(scene)
             self._active_sleep(0.1)
-        self.get_logger().info(f"Box dodany do sceny: {BOX_SIZE}")
+        self.get_logger().info(f"Stół zmapowany w MoveIt: {BOX_SIZE}")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # GŁÓWNA SEKWENCJA
+    # GŁÓWNA SEKWENCJA CYKLU
     # ─────────────────────────────────────────────────────────────────────────
-
     def run(self):
         self.get_logger().info("=== URUCHOMIENIE PEŁNEGO CYKLU OPERACYJNEGO ===")
 
@@ -424,66 +431,73 @@ class PickAndPlace(Node):
         self.ik_client.wait_for_service()
         self.cart_client.wait_for_service()
         self.arm_client.wait_for_server()
+        self.arm_left_client.wait_for_server()
         self.gripper_client.wait_for_server()
         self.move_client.wait_for_server()
         self._wait_for_joints()
-        self.get_logger().info(f"System gotowy. Wykryto {len(self._joints)} stawów.")
+        self.get_logger().info("Wszystkie podsystemy połączone.")
 
         approach_pose = self._make_pose(GRASP_X, GRASP_Y, APPROACH_Z)
         grasp_pose    = self._make_pose(GRASP_X, GRASP_Y, GRASP_Z)
 
-        # Krok 0
-        self.get_logger().info("KROK 0: Wstawianie wirtualnego stołu do MoveIt")
+        # KROK 0: Przygotowanie otoczenia i lewego ramienia
+        self.get_logger().info("KROK 0: Dodawanie wirtualnego stołu do sceny planowania")
         self._scene_add_box()
         
-        self.get_logger().info("KROK 0.1: Wyjście do zaprogramowanej pozycji STARTOWEJ (HOME_JOINTS)")
-        if not self._ompl(HOME_JOINTS):
-            self.get_logger().error("Nie udało się osiągnąć pozycji HOME! Przerywam.")
+        self.get_logger().info("KROK 0.1: Ustawianie LEWEGO ramienia w stałej pozycji spoczynkowej")
+        if not self._ompl(LEFT_HOME_JOINTS, "arm_left"):
+            self.get_logger().error("Lewe ramię nie osiągnęło pozycji HOME! Przerywam.")
             return
         self._active_sleep(1.0)
 
-        # Krok 1
+        self.get_logger().info("KROK 0.2: Wyjście PRAWEGO ramienia do pozycji HOME_JOINTS")
+        if not self._ompl(HOME_JOINTS, "arm_right_torso"):
+            self.get_logger().error("Prawe ramię nie osiągnęło pozycji HOME! Przerywam.")
+            return
+        self._active_sleep(1.0)
+
+        # KROK 1: Ruch nad stół
         self.get_logger().info("KROK 1: OMPL → Dojazd nad punkt chwytu (Approach Pose)")
         if not self._ompl_pose(approach_pose):
             self.get_logger().error("Robot nie potrafi dojechać nad stół! Abort.")
             return
         self._active_sleep(1.0)
 
-        # Krok 2
-        self.get_logger().info("KROK 2: Otwieranie chwytaka (Przygotowanie do chwytu)")
+        # KROK 2: Przygotowanie chwytaka
+        self.get_logger().info("KROK 2: Otwieranie chwytaka")
         self._gripper(GRIPPER_OPEN)
 
-        # Krok 3
+        # KROK 3: Precyzyjny zjazd kartezjański
         self.get_logger().info("KROK 3: Cartesian zjazd → Pobranie narzędzia ze stołu")
         if not self._cartesian(grasp_pose):
-            self.get_logger().error("Zjazd liniowy zablokowany (sprawdź czy palce nie uderzają w stół)! Abort.")
+            self.get_logger().error("Zjazd liniowy zablokowany! Abort.")
             return
         self._active_sleep(0.5)
 
-        # Krok 4
+        # KROK 4: Chwyt obiektu
         self.get_logger().info("KROK 4: Zamykanie chwytaka na narzędziu")
         self._gripper(GRIPPER_CLOSED)
 
-        # Krok 5
+        # KROK 5: Wyjazd w górę
         self.get_logger().info("KROK 5: Cartesian wjazd → Podniesienie narzędzia w górę")
         if not self._cartesian(approach_pose):
             self.get_logger().warn("Wjazd liniowy przerwany – nadrabiam przez OMPL")
             self._ompl_pose(approach_pose)
         self._active_sleep(1.0)
 
-        # Krok 6
-        self.get_logger().info("KROK 6: OMPL → Ruch do zaprogramowanej pozycji PODANIA (HANDOVER_JOINTS)")
-        if not self._ompl(HANDOVER_JOINTS):
+        # KROK 6: Podanie przedmiotu (Handover)
+        self.get_logger().info("KROK 6: OMPL → Ruch do pozycji PODANIA (HANDOVER_JOINTS)")
+        if not self._ompl(HANDOVER_JOINTS, "arm_right_torso"):
             self.get_logger().error("Nie można wyznaczyć ścieżki do pozycji podania!")
             return
         self._active_sleep(1.0)
 
-        # Krok 7
-        self.get_logger().info("KROK 7: Otwarcie chwytaka – Przekazanie narzędzia operatorowi")
+        # KROK 7: Przekazanie operatorowi
+        self.get_logger().info("KROK 7: Otwarcie chwytaka – Przekazanie narzędzia")
         self._gripper(GRIPPER_OPEN)
 
-        # Krok 8
-        self.get_logger().info("KROK 8: Powrót do zaprogramowanej pozycji startowej (HOME_JOINTS)")
+        # KROK 8: Powrót prawego ramienia do bazy
+        self.get_logger().info("KROK 8: Powrót prawego ramienia do pozycji bezpiecznej (HOME_JOINTS)")
         self._ompl(HOME_JOINTS)
 
         self.get_logger().info("=== CYKL OPERACYJNY ZAKOŃCZONY SUKCESEM ===")
