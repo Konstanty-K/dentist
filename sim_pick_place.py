@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """
 Pick & Place dla TIAGo Pro – ROS 2 / MoveIt 2
+Wersja kompletna, zsynchronizowana z fizycznym modelem Gazebo (table.sdf)
 
-Sekwencja:
-  1. OMPL: pozycja startowa → approach_pose (10 cm nad obiektem)
-  2. Otwórz chwytak
-  3. Cartesian: approach_pose → grasp_pose (zjazd w dół)
-  4. Zamknij chwytak
-  5. Cartesian: grasp_pose → approach_pose (wjazd w górę)
-  6. OMPL: approach_pose → place_pose
-  7. Otwórz chwytak
-
-Współrzędne dobrane na podstawie testu IK:
-  - z=0.88 (grasp) i z=0.98 (approach) są w zasięgu ramienia
-  - orientacja (0, 0.7071, 0, 0.7071) = chwytak pionowo w dół
+Cykl pracy robota:
+  0. OMPL: Wyjście do bezpiecznej pozycji startowej (HOME)
+  1. OMPL: Dojazd nad stół (APPROACH)
+  2. Otwarcie chwytaka (GRIPPER_OPEN)
+  3. Cartesian: Zjazd pionowy pod chwyt (GRASP)
+  4. Zamknięcie chwytaka na obiekcie (GRIPPER_CLOSED)
+  5. Cartesian: Pionowe podniesienie obiektu ze stołu
+  6. OMPL: Przejście do pozycji podania operatorowi (HANDOVER)
+  7. Otwarcie chwytaka (Przekazanie narzędzia)
+  8. OMPL: Powrót do bezpiecznej pozycji startowej (HOME)
 """
 
 import rclpy
@@ -21,6 +20,7 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
 import time
+import math
 
 from geometry_msgs.msg import PoseStamped, Pose
 from sensor_msgs.msg import JointState
@@ -34,79 +34,86 @@ from moveit_msgs.msg import (PlanningScene, CollisionObject, Constraints,
                               BoundingVolume)
 from shape_msgs.msg import SolidPrimitive
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# KONFIGURACJA
+# KONFIGURACJA POZYCJI (Cykl Pracy)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Punkt chwytania – górna powierzchnia prostopadłościanu
-GRASP_X = 0.55
-GRASP_Y = -0.20
-GRASP_Z = 0.88   # z=0.85+ działa wg testu IK
+# 1. Neutralna pozycja startowa robota (Odczytana z RViz, wartości w radianach)
+HOME_JOINTS = [
+    0.15,                # torso_lift_joint (podniesiony dla bezpieczeństwa)
+    math.radians(-21),   # arm_right_1_joint
+    math.radians(-105),  # arm_right_2_joint
+    math.radians(-27),   # arm_right_3_joint
+    math.radians(-135),  # arm_right_4_joint
+    math.radians(0),     # arm_right_5_joint
+    math.radians(-69),   # arm_right_6_joint
+    math.radians(0)      # arm_right_7_joint
+]
+# 2. Punkt chwytania na stole
+GRASP_X = 0.80
+GRASP_Y = 0.00
+GRASP_Z = 1.0   
 
 # Punkt dojazdowy – 10 cm nad punktem chwytania
 APPROACH_Z = GRASP_Z + 0.10   # = 0.98
 
-# Punkt odłożenia
-PLACE_X = 0.55
-PLACE_Y = -0.50
-PLACE_Z = 0.98
+# 3. Pozycja PODANIA narzędzia (Odczytana z RViz, wartości w radianach)
+HANDOVER_JOINTS = [
+    0.15,                # torso_lift_joint (taki sam jak w pozycji HOME)
+    math.radians(-74),   # arm_right_1_joint
+    math.radians(-78),   # arm_right_2_joint
+    math.radians(117),   # arm_right_3_joint
+    math.radians(-117),  # arm_right_4_joint
+    math.radians(191),   # arm_right_5_joint
+    math.radians(-91),   # arm_right_6_joint
+    math.radians(0)      # arm_right_7_joint
+]
 
-# Orientacja chwytaka: pionowo w dół
-# Źródło: move_to_target.cpp z pracy inżynierskiej tego samego robota
-# (x=0, y=1, z=0, w=0) = obrót 180° wokół Y = chwytak skierowany w dół
+# Orientacja chwytaka: pionowo w dół dla wszystkich etapów
 ORI_X = 0.0
 ORI_Y = 1.0
 ORI_Z = 0.0
 ORI_W = 0.0
 
-# Prostopadłościan w MoveIt planning scene
-BOX_ID     = 'target_box'
-BOX_SIZE   = (0.10, 0.10, 0.80)           # x, y, z [m]
-BOX_CENTER = (GRASP_X, GRASP_Y,
-              GRASP_Z - BOX_SIZE[2] / 2)  # środek = góra - połowa wysokości
+# Prostopadłościan (stół) w MoveIt - zsynchronizowany z Gazebo table.sdf
+BOX_ID     = 'sim_table'
+BOX_SIZE   = (0.80, 1.43, 0.03)
+BOX_CENTER = (0.9, 0.00, 0.735)
 
-# Parametry MoveIt
-ARM_GROUP      = 'arm_right_torso'  # z torsem = większy zasięg, lepsza konfiguracja
+# Parametry kontrolerów i MoveIta
+ARM_GROUP      = 'arm_right_torso'  
 BASE_FRAME     = 'base_footprint'
 ARM_JOINTS     = ['torso_lift_joint',
                   'arm_right_1_joint', 'arm_right_2_joint', 'arm_right_3_joint',
                   'arm_right_4_joint', 'arm_right_5_joint', 'arm_right_6_joint',
                   'arm_right_7_joint']
 
-# APPROACH_JOINTS będzie wyznaczone przez IK (arm_right_torso ma inną konfigurację)
-# Używamy PoseGoal przez OMPL zamiast hardkodowanych stawów
-APPROACH_JOINTS = None  # placeholder – nie używany przy arm_right_torso
+# Kalibracja sprzętowa dla TIAGo Pro Dentist
 GRIPPER_JOINTS = ['gripper_right_finger_joint']
-GRIPPER_OPEN   = [0.02]
-GRIPPER_CLOSED = [0.15]
+GRIPPER_OPEN   = [0.05]  # chwytak otwarty
+GRIPPER_CLOSED = [0.80]  # Chwytak zacisniety
+
 PLANNING_TIME  = 10.0
-CART_STEP      = 0.005   # krok interpolacji kartezjańskiej [m]
-CART_JUMP      = 0.0     # wyłączony próg skoku
-MIN_FRACTION   = 0.90    # minimalny % ścieżki kartezjańskiej
+CART_STEP      = 0.005   
+CART_JUMP      = 0.0     
+MIN_FRACTION   = 0.90    
 
 
 class PickAndPlace(Node):
-
     def __init__(self):
         super().__init__('pick_and_place_node')
 
-        # Serwisy
-        self.ik_client  = self.create_client(GetPositionIK, '/compute_ik')
+        self.ik_client   = self.create_client(GetPositionIK, '/compute_ik')
         self.cart_client = self.create_client(GetCartesianPath, '/compute_cartesian_path')
 
-        # Akcje
         self.move_client    = ActionClient(self, MoveGroup, '/move_action')
-        self.arm_client     = ActionClient(self, FollowJointTrajectory,
-                                           '/arm_right_controller/follow_joint_trajectory')
-        self.torso_client   = ActionClient(self, FollowJointTrajectory,
-                                           '/torso_controller/follow_joint_trajectory')
-        self.gripper_client = ActionClient(self, FollowJointTrajectory,
-                                           '/gripper_right_controller/follow_joint_trajectory')
+        self.arm_client     = ActionClient(self, FollowJointTrajectory, '/arm_right_controller/follow_joint_trajectory')
+        self.torso_client   = ActionClient(self, FollowJointTrajectory, '/torso_controller/follow_joint_trajectory')
+        self.gripper_client = ActionClient(self, FollowJointTrajectory, '/gripper_right_controller/follow_joint_trajectory')
 
-        # Publisher sceny
         self.scene_pub = self.create_publisher(PlanningScene, '/planning_scene', 10)
 
-        # Stan stawów (potrzebny do IK i Cartesian)
         self._joints = {}
         self.create_subscription(JointState, '/joint_states', self._js_cb, 10)
 
@@ -115,13 +122,11 @@ class PickAndPlace(Node):
             self._joints[name] = pos
 
     def _wait_for_joints(self, timeout=3.0):
-        """Czeka aż /joint_states zacznie publikować."""
         deadline = time.time() + timeout
         while len(self._joints) < 5 and time.time() < deadline:
             rclpy.spin_once(self, timeout_sec=0.1)
 
     def _robot_state(self) -> RobotState:
-        """Zwraca aktualny RobotState z /joint_states."""
         js = JointState()
         js.name     = list(self._joints.keys())
         js.position = list(self._joints.values())
@@ -140,12 +145,17 @@ class PickAndPlace(Node):
         p.orientation.w = ORI_W
         return p
 
+    def _active_sleep(self, duration_sec):
+        """Usypia główny wątek, przepychając jednocześnie komunikaty ROS 2."""
+        end_time = time.time() + duration_sec
+        while time.time() < end_time:
+            rclpy.spin_once(self, timeout_sec=0.1)
+
     # ─────────────────────────────────────────────────────────────────────────
     # IK
     # ─────────────────────────────────────────────────────────────────────────
 
     def _get_ik(self, pose: Pose):
-        """Zwraca listę pozycji stawów arm_right lub None."""
         self._wait_for_joints()
 
         req = GetPositionIK.Request()
@@ -161,10 +171,7 @@ class PickAndPlace(Node):
         res = future.result()
 
         if res.error_code.val != 1:
-            self.get_logger().error(
-                f"IK błąd {res.error_code.val} dla "
-                f"({pose.position.x:.2f}, {pose.position.y:.2f}, {pose.position.z:.2f})"
-            )
+            self.get_logger().error(f"IK błąd {res.error_code.val} dla ({pose.position.x:.2f}, {pose.position.y:.2f}, {pose.position.z:.2f})")
             return None
 
         names = res.solution.joint_state.name
@@ -176,7 +183,6 @@ class PickAndPlace(Node):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _ompl(self, joints: list) -> bool:
-        """Planuje i wykonuje ruch do zadanej konfiguracji stawów przez OMPL."""
         goal = MoveGroup.Goal()
         goal.request.group_name            = ARM_GROUP
         goal.request.allowed_planning_time = PLANNING_TIME
@@ -209,11 +215,6 @@ class PickAndPlace(Node):
         return True
 
     def _ompl_pose(self, pose: Pose) -> bool:
-        """
-        Planuje ruch do zadanej pozycji przez OMPL używając PoseGoal.
-        Lepsze niż JointGoal bo MoveIt dobiera konfigurację stawów
-        zgodną z późniejszą ścieżką kartezjańską.
-        """
         from shape_msgs.msg import SolidPrimitive as SP
         goal = MoveGroup.Goal()
         goal.request.group_name            = ARM_GROUP
@@ -222,7 +223,6 @@ class PickAndPlace(Node):
 
         constraints = Constraints()
 
-        # Constraint pozycji – sfera 1cm wokół celu
         pc = PositionConstraint()
         pc.header.frame_id = BASE_FRAME
         pc.link_name       = 'arm_right_tool_link'
@@ -232,7 +232,7 @@ class PickAndPlace(Node):
 
         sphere = SP()
         sphere.type       = SP.SPHERE
-        sphere.dimensions = [0.01]   # tolerancja 1 cm
+        sphere.dimensions = [0.01]   
         bv = BoundingVolume()
         bv.primitives.append(sphere)
         bv_pose = Pose()
@@ -243,7 +243,6 @@ class PickAndPlace(Node):
         pc.weight = 1.0
         constraints.position_constraints.append(pc)
 
-        # Constraint orientacji
         oc = OrientationConstraint()
         oc.header.frame_id   = BASE_FRAME
         oc.link_name         = 'arm_right_tool_link'
@@ -276,11 +275,6 @@ class PickAndPlace(Node):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _cartesian(self, end_pose: Pose) -> bool:
-        """
-        Ruch po linii prostej do end_pose.
-        Trajektoria z arm_right_torso zawiera torso_lift_joint i stawy ramienia –
-        rozdzielamy ją i wysyłamy do dwóch kontrolerów równolegle.
-        """
         self._wait_for_joints()
 
         req = GetCartesianPath.Request()
@@ -307,17 +301,12 @@ class PickAndPlace(Node):
         return self._execute_trajectory(res.solution.joint_trajectory)
 
     def _execute_trajectory(self, traj) -> bool:
-        """
-        Rozdziela trajektorię na część ramieniową i torsową,
-        wysyła do odpowiednich kontrolerów i czeka na zakończenie obu.
-        """
         from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
         torso_joints = ['torso_lift_joint']
         arm_joints   = [j for j in traj.joint_names if j not in torso_joints]
         has_torso    = any(j in torso_joints for j in traj.joint_names)
 
-        # ── Trajektoria ramienia ───────────────────────────────────────────────
         arm_traj = JointTrajectory()
         arm_traj.header     = traj.header
         arm_traj.joint_names = arm_joints
@@ -334,7 +323,6 @@ class PickAndPlace(Node):
         arm_goal = FollowJointTrajectory.Goal()
         arm_goal.trajectory = arm_traj
 
-        # ── Trajektoria torsu (jeśli istnieje) ───────────────────────────────
         torso_future = None
         if has_torso:
             torso_idx = [traj.joint_names.index(j) for j in torso_joints if j in traj.joint_names]
@@ -354,7 +342,6 @@ class PickAndPlace(Node):
             torso_goal.trajectory = torso_traj
             torso_future = self.torso_client.send_goal_async(torso_goal)
 
-        # ── Wyślij i czekaj ───────────────────────────────────────────────────
         arm_future = self.arm_client.send_goal_async(arm_goal)
 
         rclpy.spin_until_future_complete(self, arm_future)
@@ -369,7 +356,6 @@ class PickAndPlace(Node):
             if not torso_gh.accepted:
                 self.get_logger().warn("Kontroler torsu odrzucił trajektorię (kontynuuję)")
 
-        # Czekaj na zakończenie ramienia
         rf = arm_gh.get_result_async()
         rclpy.spin_until_future_complete(self, rf)
         return True
@@ -389,12 +375,13 @@ class PickAndPlace(Node):
         goal_msg = FollowJointTrajectory.Goal()
         goal_msg.trajectory = traj
 
-        # Wysyłamy asynchronicznie (Fire & Forget)
-        self.gripper_client.send_goal_async(goal_msg)
+        future = self.gripper_client.send_goal_async(goal_msg)
+        rclpy.spin_until_future_complete(self, future)
+        gh = future.result()
+        if gh.accepted:
+            rclpy.spin_until_future_complete(self, gh.get_result_async())
         
-        # Wymuszamy na Pythonie odczekanie dokładnie tyle, ile trwa fizyczny ruch palców w Gazebo.
-        # Plus mały bufor (0.5s), żeby chwyt był pewny przed podniesieniem ramienia.
-        time.sleep(2.5)
+        self._active_sleep(1.0)
 
     # ─────────────────────────────────────────────────────────────────────────
     # PLANNING SCENE
@@ -423,33 +410,16 @@ class PickAndPlace(Node):
         scene.world.collision_objects.append(obj)
         for _ in range(5):
             self.scene_pub.publish(scene)
-            time.sleep(0.1)
-        self.get_logger().info(
-            f"Box dodany: {BOX_SIZE} @ center {BOX_CENTER}"
-        )
-
-    def _scene_remove_box(self):
-        obj = CollisionObject()
-        obj.id              = BOX_ID
-        obj.header.frame_id = BASE_FRAME
-        obj.operation       = CollisionObject.REMOVE
-
-        scene = PlanningScene()
-        scene.is_diff = True
-        scene.world.collision_objects.append(obj)
-        for _ in range(5):
-            self.scene_pub.publish(scene)
-            time.sleep(0.1)
-        self.get_logger().info("Box usunięty ze sceny")
+            self._active_sleep(0.1)
+        self.get_logger().info(f"Box dodany do sceny: {BOX_SIZE}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # GŁÓWNA SEKWENCJA
     # ─────────────────────────────────────────────────────────────────────────
 
     def run(self):
-        self.get_logger().info("=== START PICK & PLACE ===")
+        self.get_logger().info("=== URUCHOMIENIE PEŁNEGO CYKLU OPERACYJNEGO ===")
 
-        # Czekaj na serwery
         self.get_logger().info("Czekam na kontrolery i serwisy...")
         self.ik_client.wait_for_service()
         self.cart_client.wait_for_service()
@@ -457,76 +427,66 @@ class PickAndPlace(Node):
         self.gripper_client.wait_for_server()
         self.move_client.wait_for_server()
         self._wait_for_joints()
-        self.get_logger().info(f"Gotowy. Stan stawów: {len(self._joints)} stawów")
+        self.get_logger().info(f"System gotowy. Wykryto {len(self._joints)} stawów.")
 
-        # Definicja pozycji
         approach_pose = self._make_pose(GRASP_X, GRASP_Y, APPROACH_Z)
         grasp_pose    = self._make_pose(GRASP_X, GRASP_Y, GRASP_Z)
-        place_pose    = self._make_pose(PLACE_X,  PLACE_Y,  PLACE_Z)
 
-        # ── KROK 1: IK dla approach_pose ─────────────────────────────────────
-        self.get_logger().info(
-            f"KROK 1: IK dla approach_pose ({GRASP_X}, {GRASP_Y}, {APPROACH_Z})"
-        )
-        approach_joints = self._get_ik(approach_pose)
-        if approach_joints is None:
-            self.get_logger().error("Brak IK dla approach_pose! Abort.")
+        # Krok 0
+        self.get_logger().info("KROK 0: Wstawianie wirtualnego stołu do MoveIt")
+        self._scene_add_box()
+        
+        self.get_logger().info("KROK 0.1: Wyjście do zaprogramowanej pozycji STARTOWEJ (HOME_JOINTS)")
+        if not self._ompl(HOME_JOINTS):
+            self.get_logger().error("Nie udało się osiągnąć pozycji HOME! Przerywam.")
             return
+        self._active_sleep(1.0)
 
-        # ── KROK 2: OMPL → approach_pose przez PoseGoal ─────────────────────
-        self.get_logger().info("KROK 2: OMPL → approach_pose")
+        # Krok 1
+        self.get_logger().info("KROK 1: OMPL → Dojazd nad punkt chwytu (Approach Pose)")
         if not self._ompl_pose(approach_pose):
-            self.get_logger().warn("PoseGoal nie powiódł się – próbuję JointGoal")
-            if approach_joints and not self._ompl(approach_joints):
-                self.get_logger().error("OMPL nie powiódł się! Abort.")
-                return
-        time.sleep(1.0)
+            self.get_logger().error("Robot nie potrafi dojechać nad stół! Abort.")
+            return
+        self._active_sleep(1.0)
 
-        # ── KROK 3: Otwórz chwytak ────────────────────────────────────────────
-        self.get_logger().info("KROK 3: Otwieram chwytak")
+        # Krok 2
+        self.get_logger().info("KROK 2: Otwieranie chwytaka (Przygotowanie do chwytu)")
         self._gripper(GRIPPER_OPEN)
-        time.sleep(0.5)
 
-        # ── KROK 4: Cartesian zjazd → grasp_pose ─────────────────────────────
-        self.get_logger().info(
-            f"KROK 4: Cartesian zjazd → grasp_pose ({GRASP_X}, {GRASP_Y}, {GRASP_Z})"
-        )
+        # Krok 3
+        self.get_logger().info("KROK 3: Cartesian zjazd → Pobranie narzędzia ze stołu")
         if not self._cartesian(grasp_pose):
-            self.get_logger().error("Cartesian zjazd nie powiódł się! Abort.")
+            self.get_logger().error("Zjazd liniowy zablokowany (sprawdź czy palce nie uderzają w stół)! Abort.")
             return
-        time.sleep(0.5)
+        self._active_sleep(0.5)
 
-        # ── KROK 5: Zamknij chwytak ───────────────────────────────────────────
-        self.get_logger().info("KROK 5: Zamykam chwytak")
+        # Krok 4
+        self.get_logger().info("KROK 4: Zamykanie chwytaka na narzędziu")
         self._gripper(GRIPPER_CLOSED)
-        time.sleep(2.0)
 
-        # ── KROK 6: Cartesian wjazd → approach_pose ──────────────────────────
-        self.get_logger().info("KROK 6: Cartesian wjazd → approach_pose")
-        # Odczekaj żeby joint_states zaktualizował stan po zamknięciu chwytaka
-        time.sleep(1.0)
-        rclpy.spin_once(self, timeout_sec=0.2)
+        # Krok 5
+        self.get_logger().info("KROK 5: Cartesian wjazd → Podniesienie narzędzia w górę")
         if not self._cartesian(approach_pose):
-            self.get_logger().warn("Cartesian wjazd niepełny – próbuję OMPL PoseGoal")
+            self.get_logger().warn("Wjazd liniowy przerwany – nadrabiam przez OMPL")
             self._ompl_pose(approach_pose)
-        time.sleep(0.5)
+        self._active_sleep(1.0)
 
-        # ── KROK 7: OMPL → place_pose ─────────────────────────────────────────
-        self.get_logger().info(
-            f"KROK 7: OMPL → place_pose ({PLACE_X}, {PLACE_Y}, {PLACE_Z})"
-        )
-        place_joints = self._get_ik(place_pose)
-        if place_joints is None:
-            self.get_logger().error("Brak IK dla place_pose!")
+        # Krok 6
+        self.get_logger().info("KROK 6: OMPL → Ruch do zaprogramowanej pozycji PODANIA (HANDOVER_JOINTS)")
+        if not self._ompl(HANDOVER_JOINTS):
+            self.get_logger().error("Nie można wyznaczyć ścieżki do pozycji podania!")
             return
-        self._ompl(place_joints)
-        time.sleep(0.5)
+        self._active_sleep(1.0)
 
-        # ── KROK 8: Otwórz chwytak ────────────────────────────────────────────
-        self.get_logger().info("KROK 8: Otwieram chwytak – odkładam obiekt")
+        # Krok 7
+        self.get_logger().info("KROK 7: Otwarcie chwytaka – Przekazanie narzędzia operatorowi")
         self._gripper(GRIPPER_OPEN)
 
-        self.get_logger().info("=== MISJA ZAKOŃCZONA ===")
+        # Krok 8
+        self.get_logger().info("KROK 8: Powrót do zaprogramowanej pozycji startowej (HOME_JOINTS)")
+        self._ompl(HOME_JOINTS)
+
+        self.get_logger().info("=== CYKL OPERACYJNY ZAKOŃCZONY SUKCESEM ===")
 
 
 def main():
@@ -539,7 +499,6 @@ def main():
     finally:
         node.destroy_node()
         rclpy.shutdown()
-
 
 if __name__ == '__main__':
     main()
