@@ -1,19 +1,7 @@
 #!/usr/bin/env python3
 """
 Pick & Place dla TIAGo Pro – ROS 2 / MoveIt 2
-Wersja z obsługą statycznego lewego ramienia oraz zsynchronizowanym stołem
-
-Cykl pracy robota:
-  0. Inicjalizacja: Ustawienie LEWEGO ramienia w stałej pozycji oraz wstawienie stołu
-  0.1 OMPL: Wyjście prawego ramienia do bezpiecznej pozycji startowej (HOME)
-  1. OMPL: Dojazd nad stół (APPROACH)
-  2. Otwarcie chwytaka (GRIPPER_OPEN)
-  3. Cartesian: Zjazd pionowy pod chwyt (GRASP)
-  4. Zamknięcie chwytaka na obiekcie (GRIPPER_CLOSED)
-  5. Cartesian: Pionowe podniesienie obiektu ze stołu
-  6. OMPL: Przejście do pozycji podania operatorowi (HANDOVER)
-  7. Otwarcie chwytaka (Przekazanie narzędzia)
-  8. OMPL: Powrót prawego ramienia do bezpiecznej pozycji startowej (HOME)
+Wersja z pełnym planowaniem OMPL dla obu ramion
 """
 
 import rclpy
@@ -30,478 +18,296 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from moveit_msgs.srv import GetPositionIK, GetCartesianPath
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import (PlanningScene, CollisionObject, Constraints,
-                              JointConstraint, RobotState,
-                              PositionConstraint, OrientationConstraint,
-                              BoundingVolume)
+                              JointConstraint, RobotState, PositionConstraint, 
+                              OrientationConstraint, BoundingVolume)
 from shape_msgs.msg import SolidPrimitive
 
 # ─────────────────────────────────────────────────────────────────────────────
-# KONFIGURACJA POZYCJI (Cykl Pracy)
+# KONFIGURACJA
 # ─────────────────────────────────────────────────────────────────────────────
+R = math.radians
 
-# 1. Pozycja startowa PRAWEGO ramienia (Wartości w radianach)
-HOME_JOINTS = [
-    0.15,                # torso_lift_joint (podniesiony dla bezpieczeństwa)
-    math.radians(-176),  # arm_right_1_joint
-    math.radians(-53),   # arm_right_2_joint
-    math.radians(95),    # arm_right_3_joint
-    math.radians(31),    # arm_right_4_joint
-    math.radians(-7),    # arm_right_5_joint
-    math.radians(-69),   # arm_right_6_joint
-    math.radians(12)     # arm_right_7_joint
-]
+HOME_JOINTS = [0.15, R(-176), R(-53), R(95), R(31), R(-7), R(-69), R(12)]
+LEFT_HOME_JOINTS = [R(145), R(-87), R(-35), R(-68), R(-38), R(-26), R(10)]
+HANDOVER_JOINTS = [0.15, R(-74), R(-78), R(117), R(-117), R(191), R(-91), R(0)]
 
-# STAŁA pozycja dla LEWEGO ramienia (Wartości w radianach)
-LEFT_HOME_JOINTS = [
-    math.radians(145),   # arm_left_1_joint
-    math.radians(-87),   # arm_left_2_joint
-    math.radians(-35),   # arm_left_3_joint
-    math.radians(-68),   # arm_left_4_joint
-    math.radians(-38),   # arm_left_5_joint
-    math.radians(-26),   # arm_left_6_joint
-    math.radians(10)     # arm_left_7_joint
-]
+GRASP_X, GRASP_Y, GRASP_Z = 0.80, 0.00, 1.0
+APPROACH_Z = GRASP_Z + 0.10
+ORI_X, ORI_Y, ORI_Z, ORI_W = 0.0, 1.0, 0.0, 0.0
 
-# 2. Punkt chwytania na stole (Wycentrowany)
-GRASP_X = 0.80
-GRASP_Y = 0.00
-GRASP_Z = 1.0   
+BOX_ID, BOX_SIZE, BOX_CENTER = 'sim_table', (0.80, 1.43, 0.03), (0.9, 0.00, 0.735)
 
-# Punkt dojazdowy – 10 cm nad punktem chwytania
-APPROACH_Z = GRASP_Z + 0.10   
-
-# 3. Pozycja PODANIA narzędzia przez prawe ramię (Wartości w radianach)
-HANDOVER_JOINTS = [
-    0.15,                # torso_lift_joint
-    math.radians(-74),   # arm_right_1_joint
-    math.radians(-78),   # arm_right_2_joint
-    math.radians(117),   # arm_right_3_joint
-    math.radians(-117),  # arm_right_4_joint
-    math.radians(191),   # arm_right_5_joint
-    math.radians(-91),   # arm_right_6_joint
-    math.radians(0)      # arm_right_7_joint
-]
-
-# Orientacja chwytaka: pionowo w dół dla wszystkich etapów
-ORI_X = 0.0
-ORI_Y = 1.0
-ORI_Z = 0.0
-ORI_W = 0.0
-
-# Prostopadłościan (stół) w MoveIt - zsynchronizowany z Gazebo table.sdf
-BOX_ID     = 'sim_table'
-BOX_SIZE   = (0.80, 1.43, 0.03)
-BOX_CENTER = (0.9, 0.00, 0.735)
-
-# Nazwy stawów i grupy dla prawego ramienia
-ARM_GROUP      = 'arm_right_torso'  
-BASE_FRAME     = 'base_footprint'
-ARM_JOINTS     = ['torso_lift_joint',
-                  'arm_right_1_joint', 'arm_right_2_joint', 'arm_right_3_joint',
-                  'arm_right_4_joint', 'arm_right_5_joint', 'arm_right_6_joint',
-                  'arm_right_7_joint']
-
-# Definicja stawów dla lewego ramienia
-LEFT_ARM_JOINTS = ['arm_left_1_joint', 'arm_left_2_joint', 'arm_left_3_joint',
-                   'arm_left_4_joint', 'arm_left_5_joint', 'arm_left_6_joint',
-                   'arm_left_7_joint']
-
-# Kalibracja sprzętowa chwytaka (Radiany)
+ARM_GROUP = 'arm_right_torso'
+LEFT_ARM_GROUP = 'arm_left'  # Grupa dla lewego ramienia
+BASE_FRAME = 'base_footprint'
+ARM_JOINTS = ['torso_lift_joint'] + [f'arm_right_{i}_joint' for i in range(1, 8)]
+LEFT_ARM_JOINTS = [f'arm_left_{i}_joint' for i in range(1, 8)]
 GRIPPER_JOINTS = ['gripper_right_finger_joint']
-GRIPPER_OPEN   = [0.05]  # Maksymalne rozwarcie (~46 stopni)
-GRIPPER_CLOSED = [0.80]  # Pewny zacisk
+GRIPPER_OPEN, GRIPPER_CLOSED = [0.05], [0.80]
 
-PLANNING_TIME  = 10.0
-CART_STEP      = 0.005   
-CART_JUMP      = 0.0     
-MIN_FRACTION   = 0.90    
-
+PLANNING_TIME, CART_STEP, CART_JUMP, MIN_FRACTION = 10.0, 0.005, 0.0, 0.90
 
 class PickAndPlace(Node):
     def __init__(self):
         super().__init__('pick_and_place_node')
-
-        self.ik_client   = self.create_client(GetPositionIK, '/compute_ik')
+        
+        self.ik_client = self.create_client(GetPositionIK, '/compute_ik')
         self.cart_client = self.create_client(GetCartesianPath, '/compute_cartesian_path')
-
-        self.move_client    = ActionClient(self, MoveGroup, '/move_action')
-        self.arm_client     = ActionClient(self, FollowJointTrajectory, '/arm_right_controller/follow_joint_trajectory')
-        self.arm_left_client= ActionClient(self, FollowJointTrajectory, '/arm_left_controller/follow_joint_trajectory')
-        self.torso_client   = ActionClient(self, FollowJointTrajectory, '/torso_controller/follow_joint_trajectory')
-        self.gripper_client = ActionClient(self, FollowJointTrajectory, '/gripper_right_controller/follow_joint_trajectory')
-
+        
+        self.action_clients = {
+            'move': ActionClient(self, MoveGroup, '/move_action'),
+            'arm': ActionClient(self, FollowJointTrajectory, '/arm_right_controller/follow_joint_trajectory'),
+            'arm_left': ActionClient(self, FollowJointTrajectory, '/arm_left_controller/follow_joint_trajectory'),
+            'torso': ActionClient(self, FollowJointTrajectory, '/torso_controller/follow_joint_trajectory'),
+            'gripper': ActionClient(self, FollowJointTrajectory, '/gripper_right_controller/follow_joint_trajectory')
+        }
+        
         self.scene_pub = self.create_publisher(PlanningScene, '/planning_scene', 10)
-
         self._joints = {}
         self.create_subscription(JointState, '/joint_states', self._js_cb, 10)
 
     def _js_cb(self, msg):
-        for name, pos in zip(msg.name, msg.position):
-            self._joints[name] = pos
+        self._joints.update(dict(zip(msg.name, msg.position)))
 
     def _wait_for_joints(self, timeout=3.0):
         deadline = time.time() + timeout
         while len(self._joints) < 5 and time.time() < deadline:
             rclpy.spin_once(self, timeout_sec=0.1)
 
+    def _spin_sleep(self, sec):
+        end = time.time() + sec
+        while time.time() < end:
+            rclpy.spin_once(self, timeout_sec=0.1)
+
+    def _send_action(self, client, goal, wait_for_result=True):
+        future = client.send_goal_async(goal)
+        rclpy.spin_until_future_complete(self, future)
+        gh = future.result()
+        if not gh or not gh.accepted:
+            return False
+        if not wait_for_result:
+            return gh 
+        res_future = gh.get_result_async()
+        rclpy.spin_until_future_complete(self, res_future)
+        return res_future.result()
+
     def _robot_state(self) -> RobotState:
-        js = JointState()
-        js.name     = list(self._joints.keys())
-        js.position = list(self._joints.values())
         rs = RobotState()
-        rs.joint_state = js
+        rs.joint_state = JointState(name=list(self._joints.keys()), position=list(self._joints.values()))
         return rs
 
     def _make_pose(self, x, y, z) -> Pose:
         p = Pose()
-        p.position.x    = float(x)
-        p.position.y    = float(y)
-        p.position.z    = float(z)
-        p.orientation.x = ORI_X
-        p.orientation.y = ORI_Y
-        p.orientation.z = ORI_Z
-        p.orientation.w = ORI_W
+        p.position.x, p.position.y, p.position.z = float(x), float(y), float(z)
+        p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w = ORI_X, ORI_Y, ORI_Z, ORI_W
         return p
 
-    def _active_sleep(self, duration_sec):
-        end_time = time.time() + duration_sec
-        while time.time() < end_time:
-            rclpy.spin_once(self, timeout_sec=0.1)
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # KONTROLA LEWEGO RAMIENIA (BEZPOŚREDNIA / STATYCZNA)
-    # ─────────────────────────────────────────────────────────────────────────
-    def _set_left_arm_home(self):
+    def _build_traj_goal(self, joint_names, positions, duration_sec=3.0):
         traj = JointTrajectory()
-        traj.joint_names = LEFT_ARM_JOINTS
+        traj.joint_names = joint_names
         pt = JointTrajectoryPoint()
-        pt.positions       = LEFT_HOME_JOINTS
-        pt.time_from_start = Duration(seconds=3).to_msg()
+        pt.positions = positions
+        pt.time_from_start = Duration(seconds=duration_sec).to_msg()
         traj.points.append(pt)
+        goal = FollowJointTrajectory.Goal()
+        goal.trajectory = traj
+        return goal
 
-        goal_msg = FollowJointTrajectory.Goal()
-        goal_msg.trajectory = traj
+    def _move_direct(self, client_key, joint_names, positions, duration=3.0):
+        goal = self._build_traj_goal(joint_names, positions, duration)
+        res = self._send_action(self.action_clients[client_key], goal)
+        self._spin_sleep(0.5) 
+        return res is not False
 
-        self.get_logger().info("Wysyłam rozkaz ustawienia lewego ramienia...")
-        future = self.arm_left_client.send_goal_async(goal_msg)
-        rclpy.spin_until_future_complete(self, future)
-        gh = future.result()
-        if gh.accepted:
-            rclpy.spin_until_future_complete(self, gh.get_result_async())
-        self._active_sleep(1.0)
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # IK & OMPL & CARTESIAN
-    # ─────────────────────────────────────────────────────────────────────────
-    def _get_ik(self, pose: Pose):
-        self._wait_for_joints()
-        req = GetPositionIK.Request()
-        req.ik_request.group_name               = ARM_GROUP
-        req.ik_request.pose_stamped             = PoseStamped()
-        req.ik_request.pose_stamped.header.frame_id = BASE_FRAME
-        req.ik_request.pose_stamped.pose        = pose
-        req.ik_request.timeout.sec              = 5
-        req.ik_request.robot_state              = self._robot_state()
-
-        future = self.ik_client.call_async(req)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=10.0)
-        res = future.result()
-
-        if res.error_code.val != 1:
-            self.get_logger().error(f"IK błąd {res.error_code.val}")
-            return None
-        names = res.solution.joint_state.name
-        positions = res.solution.joint_state.position
-        return [p for n, p in zip(names, positions) if 'arm_right' in n or 'torso' in n]
-
-    def _ompl(self, joints: list, arm) -> bool:
+    def _ompl(self, joints: list, arm_group: str) -> bool:
+        """Planowanie OMPL z automatycznym omijaniem kolizji"""
         goal = MoveGroup.Goal()
-        goal.request.group_name            = arm
+        goal.request.group_name = arm_group
         goal.request.allowed_planning_time = PLANNING_TIME
-        goal.request.num_planning_attempts = 5
+        goal.request.num_planning_attempts = 10  # Zwiększono liczbę prób
+        goal.request.planner_id = "RRTConnect"  # Jawne wskazanie plannera
 
         constraints = Constraints()
-        if arm == "arm_left":
-            arm_joints = LEFT_ARM_JOINTS
-        else:
-            arm_joints = ARM_JOINTS
-
-        for name, pos in zip(arm_joints, joints):
+        target_joints = LEFT_ARM_JOINTS if arm_group == LEFT_ARM_GROUP else ARM_JOINTS
+        
+        for name, pos in zip(target_joints, joints):
             jc = JointConstraint()
-            jc.joint_name      = name
-            jc.position        = pos
+            jc.joint_name = name
+            jc.position = pos
             jc.tolerance_above = 0.01
             jc.tolerance_below = 0.01
-            jc.weight          = 1.0
+            jc.weight = 1.0
             constraints.joint_constraints.append(jc)
         goal.request.goal_constraints.append(constraints)
 
-        future = self.move_client.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self, future)
-        gh = future.result()
-        # MIEJSCE 1: Błąd odrzucenia celu przez serwer akcji
-        if not gh.accepted:
-            self.get_logger().error(f"OMPL [{arm}]: Serwer akcji MoveIt całkowicie odrzucił żądanie ruchu!")
+        self.get_logger().info(f"Planowanie OMPL dla grupy: {arm_group}")
+        res = self._send_action(self.action_clients['move'], goal)
+        
+        if not res:
+            self.get_logger().error(f"OMPL [{arm_group}]: Cel odrzucony przez serwer")
             return False
-        
-        rf = gh.get_result_async()
-        rclpy.spin_until_future_complete(self, rf)
-        
-        error_code = rf.result().result.error_code.val
-        
-        # MIEJSCE 2: Błąd planowania lub wykonania (1 to sukces w MoveIt)
-        if error_code != 1:
-            self.get_logger().error(f"OMPL [{arm}]: Planowanie/Wykonanie zakończone błędem. Kod błędu MoveIt: {error_code}")
+            
+        if res.result.error_code.val != 1:
+            self.get_logger().error(f"OMPL [{arm_group}]: Błąd planowania. Kod: {res.result.error_code.val}")
             return False
+            
+        self.get_logger().info(f"OMPL [{arm_group}]: Planowanie zakończone sukcesem")
         return True
 
     def _ompl_pose(self, pose: Pose) -> bool:
-        from shape_msgs.msg import SolidPrimitive as SP
         goal = MoveGroup.Goal()
-        goal.request.group_name            = ARM_GROUP
+        goal.request.group_name = ARM_GROUP
         goal.request.allowed_planning_time = PLANNING_TIME
         goal.request.num_planning_attempts = 5
+        goal.request.planner_id = "RRTConnect"
 
         constraints = Constraints()
         pc = PositionConstraint()
         pc.header.frame_id = BASE_FRAME
-        pc.link_name       = 'arm_right_tool_link'
-
-        sphere = SP()
-        sphere.type       = SP.SPHERE
-        sphere.dimensions = [0.01]   
+        pc.link_name = 'arm_right_tool_link'
+        pc.weight = 1.0
+        
+        sphere = SolidPrimitive()
+        sphere.type = SolidPrimitive.SPHERE
+        sphere.dimensions = [0.01]
+        
         bv = BoundingVolume()
         bv.primitives.append(sphere)
         bv_pose = Pose()
-        bv_pose.position    = pose.position
+        bv_pose.position = pose.position
         bv_pose.orientation.w = 1.0
         bv.primitive_poses.append(bv_pose)
         pc.constraint_region = bv
-        pc.weight = 1.0
         constraints.position_constraints.append(pc)
 
         oc = OrientationConstraint()
-        oc.header.frame_id   = BASE_FRAME
-        oc.link_name         = 'arm_right_tool_link'
-        oc.orientation       = pose.orientation
+        oc.header.frame_id = BASE_FRAME
+        oc.link_name = 'arm_right_tool_link'
+        oc.orientation = pose.orientation
         oc.absolute_x_axis_tolerance = 0.1
         oc.absolute_y_axis_tolerance = 0.1
         oc.absolute_z_axis_tolerance = 0.1
         oc.weight = 1.0
         constraints.orientation_constraints.append(oc)
+        
         goal.request.goal_constraints.append(constraints)
-
-        future = self.move_client.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self, future)
-        gh = future.result()
-        if not gh.accepted:
-            return False
-
-        rf = gh.get_result_async()
-        rclpy.spin_until_future_complete(self, rf)
-        return rf.result().result.error_code.val == 1
+        res = self._send_action(self.action_clients['move'], goal)
+        return res is not False and res.result.error_code.val == 1
 
     def _cartesian(self, end_pose: Pose) -> bool:
         self._wait_for_joints()
         req = GetCartesianPath.Request()
-        req.header.frame_id  = BASE_FRAME
-        req.group_name       = ARM_GROUP
-        req.link_name        = 'arm_right_tool_link'
-        req.waypoints        = [end_pose]
-        req.max_step         = CART_STEP
-        req.jump_threshold   = CART_JUMP
+        req.header.frame_id = BASE_FRAME
+        req.group_name = ARM_GROUP
+        req.link_name = 'arm_right_tool_link'
+        req.waypoints = [end_pose]
+        req.max_step = CART_STEP
+        req.jump_threshold = CART_JUMP
         req.avoid_collisions = False
-        req.start_state      = self._robot_state()
+        req.start_state = self._robot_state()
 
         future = self.cart_client.call_async(req)
         rclpy.spin_until_future_complete(self, future, timeout_sec=15.0)
         res = future.result()
 
-        frac = res.fraction
-        self.get_logger().info(f"Cartesian: {frac*100:.1f}% zaplanowane")
-        if frac < MIN_FRACTION:
+        self.get_logger().info(f"Cartesian: {res.fraction*100:.1f}% zaplanowane")
+        if res.fraction < MIN_FRACTION:
             return False
-
         return self._execute_trajectory(res.solution.joint_trajectory)
 
     def _execute_trajectory(self, traj) -> bool:
-        torso_joints = ['torso_lift_joint']
-        arm_joints   = [j for j in traj.joint_names if j not in torso_joints]
-        has_torso    = any(j in torso_joints for j in traj.joint_names)
+        torso_names = ['torso_lift_joint']
+        arm_names = [j for j in traj.joint_names if j not in torso_names]
 
-        arm_traj = JointTrajectory()
-        arm_traj.header     = traj.header
-        arm_traj.joint_names = arm_joints
-        arm_idx = [traj.joint_names.index(j) for j in arm_joints]
-
-        for pt in traj.points:
-            npt = JointTrajectoryPoint()
-            npt.positions     = [pt.positions[i]     for i in arm_idx]
-            npt.velocities    = [pt.velocities[i]    for i in arm_idx] if pt.velocities    else []
-            npt.accelerations = [pt.accelerations[i] for i in arm_idx] if pt.accelerations else []
-            npt.time_from_start = pt.time_from_start
-            arm_traj.points.append(npt)
-
-        arm_goal = FollowJointTrajectory.Goal()
-        arm_goal.trajectory = arm_traj
-
-        torso_future = None
-        if has_torso:
-            torso_idx = [traj.joint_names.index(j) for j in torso_joints if j in traj.joint_names]
-            torso_traj = JointTrajectory()
-            torso_traj.header      = traj.header
-            torso_traj.joint_names = [traj.joint_names[i] for i in torso_idx]
-
+        def filter_traj(names):
+            idx = [traj.joint_names.index(j) for j in names if j in traj.joint_names]
+            if not idx: return None
+            new_traj = JointTrajectory()
+            new_traj.header = traj.header
+            new_traj.joint_names = [traj.joint_names[i] for i in idx]
             for pt in traj.points:
                 npt = JointTrajectoryPoint()
-                npt.positions     = [pt.positions[i]     for i in torso_idx]
-                npt.velocities    = [pt.velocities[i]    for i in torso_idx] if pt.velocities    else []
-                npt.accelerations = [pt.accelerations[i] for i in torso_idx] if pt.accelerations else []
+                npt.positions = [pt.positions[i] for i in idx]
+                npt.velocities = [pt.velocities[i] for i in idx] if pt.velocities else []
+                npt.accelerations = [pt.accelerations[i] for i in idx] if pt.accelerations else []
                 npt.time_from_start = pt.time_from_start
-                torso_traj.points.append(npt)
+                new_traj.points.append(npt)
+            return new_traj
 
+        torso_traj = filter_traj(torso_names)
+        if torso_traj:
             torso_goal = FollowJointTrajectory.Goal()
             torso_goal.trajectory = torso_traj
-            torso_future = self.torso_client.send_goal_async(torso_goal)
+            self._send_action(self.action_clients['torso'], torso_goal, wait_for_result=False)
 
-        arm_future = self.arm_client.send_goal_async(arm_goal)
-        rclpy.spin_until_future_complete(self, arm_future)
-        arm_gh = arm_future.result()
-        if not arm_gh.accepted:
-            return False
-
-        if torso_future is not None:
-            rclpy.spin_until_future_complete(self, torso_future)
-
-        rf = arm_gh.get_result_async()
-        rclpy.spin_until_future_complete(self, rf)
+        arm_traj = filter_traj(arm_names)
+        if arm_traj:
+            arm_goal = FollowJointTrajectory.Goal()
+            arm_goal.trajectory = arm_traj
+            res = self._send_action(self.action_clients['arm'], arm_goal)
+            return res is not False
         return True
-
-    def _gripper(self, position: list):
-        traj = JointTrajectory()
-        traj.joint_names = GRIPPER_JOINTS
-        pt = JointTrajectoryPoint()
-        pt.positions       = position
-        pt.time_from_start = Duration(seconds=2).to_msg()
-        traj.points.append(pt)
-
-        goal_msg = FollowJointTrajectory.Goal()
-        goal_msg.trajectory = traj
-
-        future = self.gripper_client.send_goal_async(goal_msg)
-        rclpy.spin_until_future_complete(self, future)
-        gh = future.result()
-        if gh.accepted:
-            rclpy.spin_until_future_complete(self, gh.get_result_async())
-        self._active_sleep(1.0)
 
     def _scene_add_box(self):
         obj = CollisionObject()
-        obj.id              = BOX_ID
+        obj.id = BOX_ID
         obj.header.frame_id = BASE_FRAME
-        obj.operation       = CollisionObject.ADD
-
+        obj.operation = CollisionObject.ADD
+        
         prim = SolidPrimitive()
-        prim.type       = SolidPrimitive.BOX
+        prim.type = SolidPrimitive.BOX
         prim.dimensions = list(BOX_SIZE)
         obj.primitives.append(prim)
-
-        pose = Pose()
-        pose.position.x    = BOX_CENTER[0]
-        pose.position.y    = BOX_CENTER[1]
-        pose.position.z    = BOX_CENTER[2]
-        pose.orientation.w = 1.0
-        obj.primitive_poses.append(pose)
+        
+        p = Pose()
+        p.position.x, p.position.y, p.position.z = BOX_CENTER
+        p.orientation.w = 1.0
+        obj.primitive_poses.append(p)
 
         scene = PlanningScene()
         scene.is_diff = True
         scene.world.collision_objects.append(obj)
         for _ in range(5):
             self.scene_pub.publish(scene)
-            self._active_sleep(0.1)
+            self._spin_sleep(0.1)
         self.get_logger().info(f"Stół zmapowany w MoveIt: {BOX_SIZE}")
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # GŁÓWNA SEKWENCJA CYKLU
-    # ─────────────────────────────────────────────────────────────────────────
     def run(self):
         self.get_logger().info("=== URUCHOMIENIE PEŁNEGO CYKLU OPERACYJNEGO ===")
-
-        self.get_logger().info("Czekam na kontrolery i serwisy...")
+        
         self.ik_client.wait_for_service()
         self.cart_client.wait_for_service()
-        self.arm_client.wait_for_server()
-        self.arm_left_client.wait_for_server()
-        self.gripper_client.wait_for_server()
-        self.move_client.wait_for_server()
+        for c in self.action_clients.values(): 
+            c.wait_for_server()
         self._wait_for_joints()
         self.get_logger().info("Wszystkie podsystemy połączone.")
 
         approach_pose = self._make_pose(GRASP_X, GRASP_Y, APPROACH_Z)
-        grasp_pose    = self._make_pose(GRASP_X, GRASP_Y, GRASP_Z)
+        grasp_pose = self._make_pose(GRASP_X, GRASP_Y, GRASP_Z)
 
-        # KROK 0: Przygotowanie otoczenia i lewego ramienia
-        self.get_logger().info("KROK 0: Dodawanie wirtualnego stołu do sceny planowania")
-        self._scene_add_box()
-        
-        self.get_logger().info("KROK 0.1: Ustawianie LEWEGO ramienia w stałej pozycji spoczynkowej")
-        if not self._ompl(LEFT_HOME_JOINTS, "arm_left"):
-            self.get_logger().error("Lewe ramię nie osiągnęło pozycji HOME! Przerywam.")
-            return
-        self._active_sleep(1.0)
+        steps = [
+            ("KROK 0: Dodawanie stołu", lambda: self._scene_add_box() or True),
+            # UŻYCIE OMPL DLA LEWEGO RAMIENIA - automatyczne omijanie kolizji
+            ("KROK 0.1: Lewe ramię HOME (OMPL)", lambda: self._ompl(LEFT_HOME_JOINTS, LEFT_ARM_GROUP)),
+            ("KROK 0.2: Prawe ramię HOME (OMPL)", lambda: self._ompl(HOME_JOINTS, ARM_GROUP)),
+            ("KROK 1: Dojazd nad stół (OMPL Pose)", lambda: self._ompl_pose(approach_pose)),
+            ("KROK 2: Otwarcie chwytaka", lambda: self._move_direct('gripper', GRIPPER_JOINTS, GRIPPER_OPEN, 2.0)),
+            ("KROK 3: Zjazd Cartesian (Grasp)", lambda: self._cartesian(grasp_pose)),
+            ("KROK 4: Zamknięcie chwytaka", lambda: self._move_direct('gripper', GRIPPER_JOINTS, GRIPPER_CLOSED, 2.0)),
+            ("KROK 5: Wjazd Cartesian (Approach)", lambda: self._cartesian(approach_pose) or self._ompl_pose(approach_pose)),
+            ("KROK 6: Pozycja podania (Handover)", lambda: self._ompl(HANDOVER_JOINTS, ARM_GROUP)),
+            ("KROK 7: Otwarcie chwytaka (Release)", lambda: self._move_direct('gripper', GRIPPER_JOINTS, GRIPPER_OPEN, 2.0)),
+            ("KROK 8: Powrót do bazy (OMPL)", lambda: self._ompl(HOME_JOINTS, ARM_GROUP))
+        ]
 
-        self.get_logger().info("KROK 0.2: Wyjście PRAWEGO ramienia do pozycji HOME_JOINTS")
-        if not self._ompl(HOME_JOINTS, "arm_right_torso"):
-            self.get_logger().error("Prawe ramię nie osiągnęło pozycji HOME! Przerywam.")
-            return
-        self._active_sleep(1.0)
-
-        # KROK 1: Ruch nad stół
-        self.get_logger().info("KROK 1: OMPL → Dojazd nad punkt chwytu (Approach Pose)")
-        if not self._ompl_pose(approach_pose):
-            self.get_logger().error("Robot nie potrafi dojechać nad stół! Abort.")
-            return
-        self._active_sleep(1.0)
-
-        # KROK 2: Przygotowanie chwytaka
-        self.get_logger().info("KROK 2: Otwieranie chwytaka")
-        self._gripper(GRIPPER_OPEN)
-
-        # KROK 3: Precyzyjny zjazd kartezjański
-        self.get_logger().info("KROK 3: Cartesian zjazd → Pobranie narzędzia ze stołu")
-        if not self._cartesian(grasp_pose):
-            self.get_logger().error("Zjazd liniowy zablokowany! Abort.")
-            return
-        self._active_sleep(0.5)
-
-        # KROK 4: Chwyt obiektu
-        self.get_logger().info("KROK 4: Zamykanie chwytaka na narzędziu")
-        self._gripper(GRIPPER_CLOSED)
-
-        # KROK 5: Wyjazd w górę
-        self.get_logger().info("KROK 5: Cartesian wjazd → Podniesienie narzędzia w górę")
-        if not self._cartesian(approach_pose):
-            self.get_logger().warn("Wjazd liniowy przerwany – nadrabiam przez OMPL")
-            self._ompl_pose(approach_pose)
-        self._active_sleep(1.0)
-
-        # KROK 6: Podanie przedmiotu (Handover)
-        self.get_logger().info("KROK 6: OMPL → Ruch do pozycji PODANIA (HANDOVER_JOINTS)")
-        if not self._ompl(HANDOVER_JOINTS, "arm_right_torso"):
-            self.get_logger().error("Nie można wyznaczyć ścieżki do pozycji podania!")
-            return
-        self._active_sleep(1.0)
-
-        # KROK 7: Przekazanie operatorowi
-        self.get_logger().info("KROK 7: Otwarcie chwytaka – Przekazanie narzędzia")
-        self._gripper(GRIPPER_OPEN)
-
-        # KROK 8: Powrót prawego ramienia do bazy
-        self.get_logger().info("KROK 8: Powrót prawego ramienia do pozycji bezpiecznej (HOME_JOINTS)")
-        self._ompl(HOME_JOINTS)
+        for desc, action in steps:
+            self.get_logger().info(desc)
+            if not action():
+                self.get_logger().error(f"PRZERWANIE na etapie: {desc}")
+                return
+            self._spin_sleep(0.5)
 
         self.get_logger().info("=== CYKL OPERACYJNY ZAKOŃCZONY SUKCESEM ===")
-
 
 def main():
     rclpy.init()
