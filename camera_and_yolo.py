@@ -267,7 +267,7 @@ class ToolPerceptionLiveNode(Node):
             # ── Publikacja PoseStamped ────────────────────────────────────────
             pose_msg = PoseStamped()
             pose_msg.header          = rgb_msg.header
-            pose_msg.header.frame_id = "camera_color_optical_frame"
+            pose_msg.header.frame_id = "head_front_camera_color_optical_frame"
             pose_msg.pose.position.x = float(x_3d)
             pose_msg.pose.position.y = float(y_3d)
             pose_msg.pose.position.z = float(z)
@@ -555,7 +555,7 @@ class ToolPerceptionLiveNode(Node):
     def _build_marker(self, rgb_msg, det_id, cls_name, x, y, z, quat=(0,0,0,1)) -> Marker:
         m = Marker()
         m.header          = rgb_msg.header
-        m.header.frame_id = "camera_color_optical_frame"
+        m.header.frame_id = "head_front_camera_color_optical_frame"
         m.ns              = "tools"
         m.id              = det_id
         
@@ -587,7 +587,7 @@ class ToolPerceptionLiveNode(Node):
     def _build_pointcloud(self, points: list, rgb_msg) -> PointCloud2:
         msg              = PointCloud2()
         msg.header       = rgb_msg.header
-        msg.header.frame_id = "camera_color_optical_frame"
+        msg.header.frame_id = "head_front_camera_color_optical_frame"
         msg.height       = 1
         msg.width        = len(points)
         msg.is_bigendian = False
@@ -609,7 +609,7 @@ class ToolPerceptionLiveNode(Node):
         try:
             out = self.bridge.cv2_to_imgmsg(frame, encoding="bgr8")
             out.header          = rgb_msg.header
-            out.header.frame_id = "camera_color_optical_frame"
+            out.header.frame_id = "head_front_camera_color_optical_frame"
             self.image_pub.publish(out)
         except Exception as e:
             self.get_logger().error(f"Błąd publikacji obrazu: {e}")
