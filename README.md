@@ -14,6 +14,8 @@ Projekt wykrywania i pozycjonowania narzędzi stomatologicznych w przestrzeni 3D
 * \`bag/\`: Folder z nagraniami (RGB i Depth).
 * \`fastdds_no_shm.xml\`: Konfiguracja DDS eliminująca błędy przesuwu dużych danych (No Shared Memory).
 
+* \`sam3\`: folder z modelem SAM3
+
 ## 🚀 Szybki start
 
 ### 1. Budowanie i uruchomienie kontenera
