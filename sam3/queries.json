@@ -1,0 +1,17 @@
+{
+    "a dental tool":
+    {
+        "confidence": 0.5,
+        "mask_confidence": 0.5
+    },
+    "a box":
+    {
+        "confidence": 0.5,
+        "mask_confidence": 0.5
+    },
+    "a syringe":
+    {
+        "confidence": 0.5,
+        "mask_confidence": 0.5
+    }
+}
