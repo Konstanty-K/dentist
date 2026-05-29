@@ -25,6 +25,7 @@ work on actual system files instead of copy,
 pointer to .env file with password
 contener_name" 
 
+---
 1	*Script #1* test_sam3.py 
 same terminal (root@xxx:~/workspace# ) -> ```
 ```
@@ -34,7 +35,7 @@ python test_sam3.py images/tools.jpg "syringe" --output-path output/syringe.png
 - ```images/tools.jpg```  -> your input image
 - ```"syringe"``` -> prompt, what sam3 shall long for
 - ```output/syringe.png``` -> your segmented output
-
+---
 2 *Script #2 test_batch_sam3.py
 
 ```
@@ -47,3 +48,18 @@ python3 test_batch_sam3.py  ./dataset_01 "a syringe" ./results --threshold 0.65 
 - ```./results``` -> folder for output
 -  ```--threshold 0.65``` ->  the minimum confidence the model needs to accept and detect an object at all
 - ```--mask-threshold 0.4``` ->  determines the width and precise edges of the applied mask
+---
+2 *Script #3 test_batch_annotate_sam3.py
+
+```
+python3 annotate_data_with_sam3.py ./dataset_01 ./queries.json
+```
+or
+```
+python3 annotate_data_with_sam3.py ./dataset_01 ./queries.json --show-labels
+```
+**LEGEND:
+- ```./dataset_01```  -> your input image folder
+- ```./queries.json``` -> JSON with prompts, what sam3 shall long for
+-  ```--threshold 0.65``` ->  the minimum confidence the model needs to accept and detect an object at all
+- ```---show-labels``` ->  crops with labels
