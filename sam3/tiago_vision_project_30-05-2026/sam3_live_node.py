@@ -1,9 +1,23 @@
+#!/usr/bin/env python3
+"""
+SAM3 Live Perception Node for ROS 2 Humble
+Project: Tiago Pro Surgical Tool Grasping
+Author: Konstanty Kaszubski
+Team: Konstanty Kaszubski, Jakub Jagodziński, Adam Klimczak
+Institution: Poznań University of Technology
+
+This node subscribes to a raw camera feed, performs zero-shot instance segmentation 
+using Meta's SAM3 model, and publishes the annotated masks back to ROS 2 (RViz2).
+Optimized for NVIDIA Blackwell (RTX 50-series) architectures via torch.compile.
+"""
+
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge, CvBridgeError
 
 import os
+import sys
 import json
 import torch
 import torch._dynamo
@@ -31,7 +45,7 @@ class Sam3LiveNode(Node):
         
         hf_token = os.environ.get("HF_TOKEN")
         if not hf_token:
-            self.get_logger().error("Brak HF_TOKEN w pliku .env!")
+            self.get_logger().error("Brak HF_TOKEN w środowisku (flaga --env)!")
             raise RuntimeError("Missing HF_TOKEN")
 
         with open(query_path, 'r') as f:
@@ -57,6 +71,11 @@ class Sam3LiveNode(Node):
         
         self.processor = Sam3Processor.from_pretrained("facebook/sam3", token=hf_token)
         self.colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0)]
+
+        # --- Sygnał dźwiękowy oznaczający gotowość AI ---
+        sys.stdout.write("\a\a\a")
+        sys.stdout.flush()
+        self.get_logger().info("🔔 MODEL GOTOWY! Wagi załadowane do VRAM.")
 
         # --- Komunikacja ---
         self.subscription = self.create_subscription(Image, self.camera_topic, self.image_callback, 1)
