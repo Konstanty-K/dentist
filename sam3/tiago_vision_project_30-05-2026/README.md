@@ -18,12 +18,13 @@ Projekt został stworzony z myślą o systemach wizyjnych dla robotów manipulac
 Pobierz repozytorium, przejdź do folderu głównego i zbuduj środowisko:
 ```bash
 docker build -t ros2_sam3_vision .
+```
 2. Uruchomienie kontenera (Główny Serwer)
 Poniższa komenda automatycznie podłącza obecny katalog (dzięki zmiennej $PWD), mapuje wszystkie potencjalne porty kamer wideo na hoście i uruchamia instancję.
 
 Ważne: Ze względów cyberbezpieczeństwa nie używamy plików .env. Podmień TWÓJ_TOKEN na swój prawdziwy klucz Hugging Face bezpośrednio w komendzie!
 
-Bash
+```Bash
 xhost +local:root && docker run -it \
     --gpus all \
     --env="DISPLAY" \
@@ -40,22 +41,25 @@ xhost +local:root && docker run -it \
     --privileged \
     --name=tiago_vision_container \
     ros2_sam3_vision:latest bash
+```
 🖥️ Procedura testowa (System 3 Terminali)
 Aby uruchomić pełny potok przetwarzania wizji, musisz otworzyć 3 osobne okna terminala na hoście.
 
 W KAŻDYM nowym oknie najpierw wejdź do kontenera i aktywuj środowisko ROS 2:
 
-Bash
+```Bash
 docker exec -it tiago_vision_container bash
 source /opt/ros/humble/setup.bash
 cd /workspace
+```
 Następnie uruchom poszczególne węzły:
 
 Terminal 1: Strumień z kamery
 Uruchom węzeł kamery. W środowiskach Linux fizyczna kamera sprzętowa jest często mapowana do /dev/video2 zamiast domyślnego video0. Uruchom węzeł z właściwym portem:
 
-Bash
+```Bash
 ros2 run usb_cam usb_cam_node_exe --ros-args -p video_device:=/dev/video2
+```
 (Uwaga: Jeśli dioda kamery się nie zapali, przerwij komendę (Ctrl+C) i przetestuj /dev/video0).
 
 Terminal 2: Węzeł Sztucznej Inteligencji (SAM3)
@@ -65,15 +69,17 @@ Bash
 python3 sam3_live_node.py
 🔥 Tryb wysokiej wydajności (JIT): Aby wycisnąć maksymalne FPS dla kart sprzętowych Nvidii, uruchom optymalizator flagą:
 
-Bash
+```Bash
 ros2 run robot_vision sam3_live_node --ros-args -p use_compile:=True
+```
 Skrypt poinformuje Cię potrójnym sygnałem dźwiękowym z terminala, gdy 3.5 GB wag modelu załaduje się do pamięci VRAM.
 
 Terminal 3: Wizualizacja w RViz2
 Uruchom środowisko graficzne:
 
-Bash
+```Bash
 rviz2
+```
 W RViz2:
 
 Kliknij Add -> By topic.
@@ -83,7 +89,7 @@ Wybierz /sam3/annotated_image -> Image.
 ⚙️ Konfiguracja Słownika (Wykrywanie Obiektów)
 Prompty (czyli to, co algorytm ma wykrywać na obrazie) znajdują się w pliku queries.json. Edytuj go na żywo z poziomu hosta bez konieczności restartowania systemu, aby natychmiast zaktualizować filtry węzła:
 
-JSON
+```JSON
 {
     "a surgical tool": {
         "confidence": 0.5,
@@ -94,5 +100,5 @@ JSON
         "mask_confidence": 0.5
     }
 }
-
+```
 Konstanty Kaszubski
