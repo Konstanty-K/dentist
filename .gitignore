@@ -15,3 +15,16 @@ log/
 
 # Bag
 bag/
+
+# --- Dopisy SAM3 (K. Kaszubski) ---
+# Środowisko AI i PyTorch (Cache)
+.torch_cache/
+*.pth
+*.pt
+*.onnx
+
+# Ignoruj pliki wideo/obrazy testowe
+*.mp4
+*.avi
+*.png
+*.jpg
