@@ -28,3 +28,6 @@ bag/
 *.avi
 *.png
 *.jpg
+
+# Passwords & Tokens:
+.env
