@@ -38,10 +38,10 @@ LEFT_HOME_JOINTS  = [R(145), R(-87), R(-35), R(-68), R(-38), R(-26), R(10)]
 # Definicja stołu (wirtualnie obniżony środek, aby szerokie palce nie generowały kolizji)
 BOX_ID = 'sim_table'
 BOX_SIZE = (0.80, 1.43, 0.03)
-BOX_CENTER = (0.90, 0.00, 0.60)
+BOX_CENTER = (0.90, 0.00, 0.735)
 
 # Wysokość chwytania (TCP na końcówkach palców - zjeżdżamy tuż nad blat)
-GRASP_Z = 0.80
+GRASP_Z = 0.95
 
 BASE_FRAME = 'base_footprint'
 PLANNING_TIME, CART_STEP, CART_JUMP, MIN_FRACTION = 10.0, 0.005, 0.0, 0.80
