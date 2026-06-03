@@ -31,9 +31,7 @@ class SamTrackerNode(Node):
         super().__init__('sam_tracker_node')
         
         # --- 1. Konfiguracja Przepływu i Heurystyki ---
-        self.camera_fps = 8.5 
-        self.target_fps = 3.0 
-        self.frame_skip_ratio = max(1, int(self.camera_fps / self.target_fps))
+        self.is_processing = False
         self.frame_counter = 0
 
         self.MAX_GRACE_FRAMES = 3
@@ -75,7 +73,7 @@ class SamTrackerNode(Node):
 
         sys.stdout.write("\a\a\a")
         sys.stdout.flush()
-        self.get_logger().info(f"🔔 MODEL GOTOWY! Decimation: 1/{self.frame_skip_ratio}, Grace: {self.MAX_GRACE_FRAMES} frames")
+        self.get_logger().info(f"🔔 MODEL GOTOWY! Smart FPS (Async Drop), Grace: {self.MAX_GRACE_FRAMES} frames")
 
         # --- 4. ROS 2 Komunikacja ---
         self.bridge = CvBridge()
@@ -84,9 +82,9 @@ class SamTrackerNode(Node):
 
 
     def image_callback(self, msg):
-        self.frame_counter += 1
-        if self.frame_counter % self.frame_skip_ratio != 0:
-            return 
+        if self.is_processing:
+            return  # Pomijamy, jeśli nadal przetwarzamy poprzednią klatkę
+        self.is_processing = True
     
         try:
             cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")

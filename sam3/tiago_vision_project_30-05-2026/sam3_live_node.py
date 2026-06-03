@@ -47,7 +47,10 @@ class Sam3LiveNode(Node):
         if not hf_token:
             self.get_logger().error("Brak HF_TOKEN w środowisku (flaga --env)!")
             raise RuntimeError("Missing HF_TOKEN")
-
+        # else:
+        #     self.get_logger().info("HF_TOKEN znaleziony w środowisku.")
+        #     self.get_logger().info(hf_token)
+            
         with open(query_path, 'r') as f:
             self.query_dict = json.load(f)
 
