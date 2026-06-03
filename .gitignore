@@ -31,3 +31,7 @@ bag/
 
 # Passwords & Tokens:
 .env
+
+# Prywatne konfiguracje Dockerowe
+sam3/moje_fastdds.xml
+mock/
