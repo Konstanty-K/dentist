@@ -1,45 +1,102 @@
-# Instrukcja uruchomienia: Wielki Finał (Śledzenie SAM3 2D)
+# 🚀 Instrukcja uruchomienia: Węzeł SAM3 (Zero-Shot Tracking)
 
-Poniższy poradnik przeprowadzi Cię krok po kroku przez proces uruchomienia węzłów ROS 2 odpowiedzialnych za pobieranie obrazu z kamery i nakładanie na niego inteligentnych masek przez sieć neuronową SAM3.
+Poniższy poradnik przeprowadza przez proces uruchomienia środowiska sztucznej inteligencji, podpięcia źródła obrazu i wizualizacji wygenerowanych masek. Całość działa w architekturze ROS 2 Humble.
 
-## Krok 1: Przygotowanie fizyczne
-1. Upewnij się, że kamera jest podłączona, a jej obiektyw nie jest niczym zasłonięty.
-2. Połóż na stole przed kamerą narzędzie chirurgiczne (np. nożyczki, strzykawkę), które znajduje się w słowniku `queries.json`.
+**Ważne przed startem:** Upewnij się, że w folderze `sam3` znajduje się Twój prywatny plik `.env` z kluczem Hugging Face (`HF_TOKEN=...`) oraz odchudzony plik `queries.json` (zawierający maksymalnie 2-3 narzędzia dla zachowania płynności FPS).
 
-## Krok 2: Uruchomienie strumienia wideo (Terminal 1)
-Otwórz pierwszy terminal na swoim laptopie i uruchom podstawowy kontener z systemem ROS 2, aby aktywować węzeł kamery.
+---
 
-1. Wejdź do środowiska roboczego:
-   `docker exec -it ros2_lab bash`
-2. Załaduj zmienne systemowe ROS 2:
-   `source /opt/ros/humble/setup.bash`
-3. Uruchom kamerę na odpowiednim porcie (zwróć uwagę, czy zapaliła się dioda obok obiektywu):
-   `ros2 run usb_cam usb_cam_node_exe --ros-args -p video_device:="/dev/video2"`
-   *(Zostaw ten terminal otwarty, aby kamera nadawała obraz w tle).*
+## Krok 1: Inicjalizacja środowiska AI (Terminal 1)
 
-## Krok 3: Uruchomienie modułu sztucznej inteligencji (Terminal 2)
-Otwórz drugi, zupełnie nowy terminal. Tutaj uruchomimy cięższy kontener (AI), który ma dostęp do karty graficznej (GPU) i potrafi przetworzyć obraz.
+W pierwszej kolejności budujemy i podnosimy ciężki kontener obliczeniowy, upewniając się, że ma dostęp do klucza HF oraz profilu sieciowego.
 
 1. Przejdź do folderu modułu SAM3:
-   `cd ~/robotics/dentist/sam3`
-2. Uruchom kontener z modelem AI (upewnij się, że uruchamiasz go z flagą sieci hosta, np. `--net=host`, aby widział kamerę z pierwszego kontenera).
-3. Wejdź do folderu z paczką i skompiluj ją:
-   `cd /workspace/ros2_ws` *(Zmień /workspace/ na właściwą ścieżkę mapowania, jeśli jest inna)*
-   `colcon build --packages-select vision_pipeline`
-4. Załaduj nowo zbudowane środowisko:
-   `source install/setup.bash`
-5. Uruchom węzeł śledzący:
-   `ros2 run vision_pipeline sam_tracker`
+   ```bash
+   cd ~/robotics/dentist/sam3
 
-*Poczekaj chwilę. W terminalu usłyszysz sygnał dźwiękowy (dzwonek), a w logach pojawi się informacja: `🔔 MODEL GOTOWY! Wagi załadowane do VRAM.` To oznacza, że sieć działa i przetwarza klatki.*
+```
 
-## Krok 4: Wizualizacja efektów (Terminal 3)
-Otwórz trzeci terminal (może być natywnie na systemie Ubuntu lub w lekkim kontenerze `ros2_lab`) i uruchom interfejs graficzny:
+2. Zbuduj obraz (wymagane tylko przy pierwszej instalacji lub po zmianie `Dockerfile`):
+```bash
+docker build -t tiago_vision_container .
 
-1. Wpisz komendę:
-   `rviz2`
-2. W oknie programu RViz, w lewym dolnym rogu kliknij przycisk **Add**.
-3. Wybierz zakładkę **By topic** i znajdź temat `/sam3/smoothed_mask`.
-4. Kliknij na niego dwukrotnie, aby dodać okno podglądu wideo.
+```
 
-**🎉 Gotowe!** Widzisz teraz obraz z kamery z nałożonymi kolorowymi maskami. Spróbuj na ułamek sekundy zasłonić narzędzie dłonią – dzięki zaimplementowanej heurystyce (Temporal Smoothing), maska nie zniknie natychmiast, zachowując stabilność śledzenia dla robota!
+
+3. Uruchom kontener z odpowiednim mapowaniem sprzętu i plików (podmontuje to obecny folder do `/workspace`):
+```bash
+xhost +local:root
+docker run -it --rm --gpus all --net host --privileged --env-file .env -v /tmp/.X11-unix:/tmp/.X11-unix:rw -e DISPLAY=$DISPLAY -v $(pwd):/workspace --name tiago_vision tiago_vision_container bash
+
+```
+
+
+4. Wewnątrz kontenera skompiluj i załaduj środowisko ROS 2:
+```bash
+cd /workspace/ros2_ws
+colcon build --packages-select vision_pipeline
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+```
+
+
+5. **[KRYTYCZNE]** Załaduj profil FastDDS i wystartuj węzeł ze wskazanym słownikiem:
+```bash
+export FASTRTPS_DEFAULT_PROFILES_FILE=/workspace/moje_fastdds.xml
+ros2 run vision_pipeline sam_tracker --ros-args -p query_file:="/workspace/queries.json"
+
+```
+
+
+
+*Czekaj na dzwonek i komunikat: `🔔 MODEL GOTOWY!*`
+
+---
+
+## Krok 2: Uruchomienie strumienia wideo (Terminal 2)
+
+Otwórz drugi, natywny terminal w systemie Ubuntu. Jako źródło obrazu musisz wybrać jedną z dwóch ścieżek: używasz symulatora **albo** sprzętu fizycznego.
+
+**Opcja A: Symulator (mock_camera / rosbag)**
+Jeśli nie masz podłączonego robota, uruchom skrypt odtwarzający nagranie z sąsiedniego katalogu:
+
+```bash
+cd ~/robotics/dentist/mock_camera
+source /opt/ros/humble/setup.bash
+export FASTRTPS_DEFAULT_PROFILES_FILE=../sam3/moje_fastdds.xml
+
+./sim_orbbec_camera.sh
+
+```
+
+**Opcja B: Kamera fizyczna (np. Orbbec / USB)**
+Podłącz urządzenie i uruchom standardowy węzeł kamery:
+
+```bash
+source /opt/ros/humble/setup.bash
+export FASTRTPS_DEFAULT_PROFILES_FILE=~/robotics/dentist/sam3/moje_fastdds.xml
+
+ros2 run usb_cam usb_cam_node_exe --ros-args -p video_device:="/dev/video0"
+
+```
+
+---
+
+## Krok 3: Wizualizacja efektów w czasie rzeczywistym (Terminal 3)
+
+Ostatni krok to podgląd wyników na natywnej instalacji ROS 2 na Ubuntu.
+
+1. Uruchom interfejs RViz2:
+```bash
+source /opt/ros/humble/setup.bash
+rviz2
+
+```
+
+
+2. W lewym dolnym rogu kliknij **Add** -> **By topic** i wybierz `/sam3/smoothed_mask`.
+3. W panelu po lewej stronie, dla dodanego obrazu zmień parametr **Reliability Policy** na **Best Effort**, aby uniknąć problemu z brakiem klatek ("No Image").
+
+**Gotowe!** Model analizuje obraz i nakłada surowe maski na obiekty. Z uwagi na zoptymalizowaną heurystykę dla powolnych modeli (Grace Period = 0), maski odzwierciedlają twardy stan faktyczny z danej mikrosekundy – znikną natychmiast, gdy narzędzie medyczne zostanie zasłonięte przez dłoń operatora lub usunięte z kadru.
+

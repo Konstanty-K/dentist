@@ -3,7 +3,7 @@
         "confidence": 0.5,
         "mask_confidence": 0.5
     },
-    "a cup": {
+    "packaged root canal files": {
         "confidence": 0.5,
         "mask_confidence": 0.5
     },
@@ -11,9 +11,9 @@
         "confidence": 0.5,
         "mask_confidence": 0.5
     },
-	"a box": {
-	"confidence": 0.5,
-	"mask_confidence": 0.5
-	}
+    "a dental mirror": {
+        "confidence": 0.5,
+        "mask_confidence": 0.5
+    }
 }
 

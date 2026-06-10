@@ -86,8 +86,8 @@ source /workspace/sam3/ros2_ws/install/setup.bash
 # 2. Wyłącz pamięć współdzieloną (SHM) dla DDS - KRYTYCZNE DLA OBRAZU!
 export FASTRTPS_DEFAULT_PROFILES_FILE=/workspace/fastdds_no_shm.xml
 
-# 3. Uruchom tracking
-ros2 run vision_pipeline sam_tracker
+# 3. Uruchom tracking (Z odchudzonym słownikiem)
+ros2 run vision_pipeline sam_tracker --ros-args -p query_file:="/workspace/queries_fast.json"
 ```
 
 Węzeł zasubskrybuje domyślnie temat `/image_raw` i opublikuje nałożone maski na `/sam3/smoothed_mask`.

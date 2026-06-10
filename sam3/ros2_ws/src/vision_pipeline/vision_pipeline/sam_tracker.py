@@ -92,7 +92,7 @@ class SamTrackerNode(Node):
             return
 
         # Skalowanie w dół dla poprawy FPS
-        small_frame = cv2.resize(cv_image, (320, 240))
+        small_frame = cv2.resize(cv_image, (640, 480))
         rgb_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
         overlay = small_frame.copy()
 
@@ -127,12 +127,12 @@ class SamTrackerNode(Node):
                 outputs, 
                 threshold=thresholds.get("confidence", 0.5), 
                 mask_threshold=thresholds.get("mask_confidence", 0.5),
-                target_sizes=[(240, 320)]
+                target_sizes=[(480, 640)]
             )[0]
 
             masks = results["masks"]
             object_found_in_current_frame = False
-            combined_mask = np.zeros((240, 320), dtype=bool)
+            combined_mask = np.zeros((480, 640), dtype=bool)
 
             if len(masks) > 0:
                 for mask in masks:
